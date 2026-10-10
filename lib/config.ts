@@ -9,10 +9,11 @@
 // Documented precedence (lowest → highest):
 //   1. built-in DEFAULT_CONFIG below,
 //   2. browser-persisted prefs (localStorage key PREFS_KEY; keys
-//      role/lang/simpleMode ONLY — demo and seedId are never persisted),
-//   3. URL query (?role=&lang=&simple=&demo=) which wins when present
-//      (present = key defined; an invalid present value falls back to the
-//      default, still overriding persisted prefs).
+//      role/lang/simpleMode/confirm ONLY — demo and seedId are never
+//      persisted),
+//   3. URL query (?role=&lang=&simple=&demo=&confirm=&seed=) which wins
+//      when present (present = key defined; an invalid present value
+//      falls back to the default, still overriding persisted prefs).
 //
 // SSR-safety / hydration: parseAppConfig and resolveAppConfig are pure
 // functions of their arguments (no window/localStorage access). Components
@@ -33,6 +34,9 @@ export interface AppConfig {
   role: Role;
   demo: boolean;
   seedId: string;
+  // AD-3 confirm gate: terminal actions (Resolve, Reject) require a second
+  // arming click. Default true (protective); ?confirm=0 disables.
+  confirm: boolean;
 }
 
 export const SEED_ID = "campus-maint-v1";
@@ -48,13 +52,16 @@ export const DEFAULT_CONFIG: AppConfig = {
   role: "coordinator",
   demo: false,
   seedId: SEED_ID,
+  confirm: true,
 };
 
-// Only role/lang/simpleMode are persistable (demo/seedId/aiMode never are).
+// Only role/lang/simpleMode/confirm are persistable (demo/seedId/aiMode
+// never are — demo and seedId are per-navigation intents).
 export interface PersistedPrefs {
   role?: Role;
   lang?: Lang;
   simpleMode?: boolean;
+  confirm?: boolean;
 }
 
 export function isLang(u: unknown): u is Lang {
@@ -100,14 +107,45 @@ export function resolveAppConfig(
     if (typeof persisted.simpleMode === "boolean") {
       cfg.simpleMode = persisted.simpleMode;
     }
+    if (typeof persisted.confirm === "boolean") {
+      cfg.confirm = persisted.confirm;
+    }
   }
   if (query !== null && typeof query === "object") {
     if (query.role !== undefined) cfg.role = parseRole(query.role);
     if (query.lang !== undefined) cfg.lang = parseLang(query.lang);
     if (query.simple !== undefined) cfg.simpleMode = parseFlag(query.simple);
     if (query.demo !== undefined) cfg.demo = parseFlag(query.demo);
+    if (query.confirm !== undefined) cfg.confirm = parseFlag(query.confirm);
+    if (query.seed !== undefined) cfg.seedId = parseSeedId(query.seed);
   }
   return cfg;
+}
+
+// AD-5 seed switch: only registered pack ids are selectable. Unknown or
+// malformed values fall back to the default namespace (never an arbitrary
+// key). Registering a new pack = add its items provider in lib/store.ts +
+// append its id here (the documented <60min authoring path).
+export const REGISTERED_SEED_IDS: readonly string[] = [SEED_ID];
+
+const SEED_ID_RE = /^[a-z0-9-]{1,24}$/;
+
+export function parseSeedId(v: string | undefined): string {
+  if (
+    typeof v === "string" &&
+    SEED_ID_RE.test(v) &&
+    REGISTERED_SEED_IDS.includes(v)
+  ) {
+    return v;
+  }
+  return DEFAULT_CONFIG.seedId;
+}
+
+// Audit-note helper for armed confirmations: records that a second,
+// deliberate click executed a terminal action, preserving any user note.
+export function confirmNote(userNote: string): string {
+  const trimmed = userNote.trim();
+  return trimmed.length > 0 ? `${trimmed} (confirmed inline)` : "confirmed inline";
 }
 
 // SSR-safe persisted-prefs read: returns {} on the server, on malformed
@@ -127,6 +165,7 @@ export function loadPersistedPrefs(): PersistedPrefs {
     if (isRole(o.role)) out.role = o.role;
     if (isLang(o.lang)) out.lang = o.lang;
     if (typeof o.simpleMode === "boolean") out.simpleMode = o.simpleMode;
+    if (typeof o.confirm === "boolean") out.confirm = o.confirm;
     return out;
   } catch {
     return {};
@@ -150,6 +189,9 @@ export function savePersistedPrefs(patch: PersistedPrefs): void {
     }
     if (patch.simpleMode !== undefined) {
       next.simpleMode = patch.simpleMode;
+    }
+    if (patch.confirm !== undefined) {
+      next.confirm = patch.confirm;
     }
     window.localStorage.setItem(PREFS_KEY, JSON.stringify(next));
   } catch {

@@ -14,7 +14,7 @@ import {
 } from "../../lib/config";
 import { suggestDuplicates } from "../../lib/duplicates";
 import type { Item, Role, Severity, Status } from "../../lib/schema";
-import { ensureSeeded, listItems, reseedDemo } from "../../lib/store";
+import { ensureSeeded, listItems, reseedDemo, setActiveSeedId } from "../../lib/store";
 
 const SEVERITY_CHIP: Record<Severity, string> = {
   P0: "bg-red-600 text-white",
@@ -103,6 +103,7 @@ function BoardInner() {
       lang: params.get("lang") ?? undefined,
       simple: params.get("simple") ?? undefined,
       demo: params.get("demo") ?? undefined,
+      seed: params.get("seed") ?? undefined,
     }),
     [params],
   );
@@ -126,6 +127,9 @@ function BoardInner() {
     const stored = loadPersistedPrefs();
     setPrefs(stored);
     setRole(resolveAppConfig(query, stored).role);
+    // AD-5: activate the ?seed= namespace before seeding/listing so an
+    // alternate pack isolates its storage. Unknown ids fall back to default.
+    setActiveSeedId(resolveAppConfig(query, stored).seedId);
     if (demo) {
       reseedDemo();
     } else {

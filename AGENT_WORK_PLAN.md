@@ -36,6 +36,14 @@ P5 gates (F): full ACCEPTANCE_TESTS on preview → prod freeze → backup video.
 > endorsed by Agent C). G4 AD coverage is therefore AD-1 (rule default),
 > AD-2 (SIMPLE_MODE), AD-4 (lang fallback), AD-6-partial (export/roles);
 > AD-3/AD-5 remain scheduled, not claimed.
+>
+> P5 update (lead): AD-3 and AD-5 are now implemented — REQUIRE_CONFIRM via
+> a `confirm` flag (default true, `?confirm=0` disables, persisted pref;
+> terminal Resolve/Reject require an arming click, audit carries
+> "confirmed inline") and `?seed=` via a validated pack registry
+> (REGISTERED_SEED_IDS, per-pack isolated namespaces). STORAGE stays out:
+> no AD/F item tests a storage switch and the blueprint mandates
+> localStorage-only MVP — recorded as explicitly deferred, not missing.
 Optional only after P5 green: photo preview polish, hi key fill, transcript-paste stub, extra seeds.
 
 ## 3. Dependencies

@@ -64,6 +64,9 @@ const {
   ensureSeeded,
   parseItems,
   parseEvents,
+  setActiveSeedId,
+  getActiveSeedId,
+  queueKeys,
 } = store;
 const { validateEvent, validateItem, canTransition } = schema;
 
@@ -379,6 +382,32 @@ check(
 // --- ID sequencing kept unique ---
 const ids = listItems().map((i) => i.id);
 check(new Set(ids).size === ids.length, "all item ids unique");
+
+// --- AD-5 seed namespaces (P5): validated selection, isolated keys ---
+reseedDemo();
+check(listItems().length === 10, "reseed restores 10 canonical seeds");
+check(getActiveSeedId() === "campus-maint-v1", "active seed defaults canonical");
+check(setActiveSeedId("evil!") === false, "setActiveSeedId rejects malformed id");
+check(setActiveSeedId("unknown-pack") === false, "setActiveSeedId rejects unregistered id");
+check(
+  getActiveSeedId() === "campus-maint-v1",
+  "rejected switch leaves active namespace unchanged",
+);
+check(setActiveSeedId("campus-maint-v1") === true, "setActiveSeedId accepts registered id");
+const ka = queueKeys("campus-maint-v1");
+const kb = queueKeys("night-pack");
+check(
+  ka.items !== kb.items && ka.events !== kb.events && ka.meta !== kb.meta,
+  "per-pack namespaces never collide",
+);
+check(
+  ka.items === "relayboard:campus-maint-v1:items",
+  "canonical namespace keys exact",
+);
+check(
+  listItems().length === 10,
+  "namespace switch-back still lists 10 canonical seeds",
+);
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures > 0 ? 1 : 0);

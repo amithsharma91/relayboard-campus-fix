@@ -25,11 +25,7 @@ import { classify, contentHashFor } from "./fallbacks";
 
 export const SEED_ID = "campus-maint-v1";
 
-const ITEMS_KEY = `relayboard:${SEED_ID}:items`;
-const EVENTS_KEY = `relayboard:${SEED_ID}:events`;
-const META_KEY = `relayboard:${SEED_ID}:meta`;
-
-interface SeedMeta {
+export interface SeedMeta {
   seedId: string;
   hash: string;
   // P3 workflow counter: number of IDs issued past RPT-1010. Optional so
@@ -42,6 +38,62 @@ interface SeedMeta {
 let memoryItems: Item[] | null = null;
 let memoryEvents: Event[] = [];
 let memoryMeta: SeedMeta | null = null;
+
+// AD-5 seed namespaces: ?seed=<id> isolates storage per pack. Only
+// registered pack ids are selectable; today the registry holds the single
+// canonical pack. Authoring a new pack (<60min path): add its items/events
+// providers beside canonicalSeedItems/canonicalSeedEvents, append its id to
+// REGISTERED_SEED_IDS, and extend packItems()/packEvents() to serve it.
+export const REGISTERED_SEED_IDS: readonly string[] = [SEED_ID];
+
+let activeSeedId: string = SEED_ID;
+
+export function getActiveSeedId(): string {
+  return activeSeedId;
+}
+
+// Returns false (and changes nothing) for unknown ids — callers keep the
+// default namespace. Resets the in-memory mirrors so the newly active
+// namespace loads fresh on the next read.
+export function setActiveSeedId(id: unknown): boolean {
+  if (typeof id !== "string" || !REGISTERED_SEED_IDS.includes(id)) {
+    return false;
+  }
+  if (id !== activeSeedId) {
+    activeSeedId = id;
+    memoryItems = null;
+    memoryEvents = [];
+    memoryMeta = null;
+  }
+  return true;
+}
+
+// Pure key derivation (exported for tests): per-pack namespaces can never
+// collide with each other or with the prefs key.
+export function queueKeys(seedId: string): {
+  items: string;
+  events: string;
+  meta: string;
+} {
+  return {
+    items: `relayboard:${seedId}:items`,
+    events: `relayboard:${seedId}:events`,
+    meta: `relayboard:${seedId}:meta`,
+  };
+}
+
+// Pack content for the active namespace. Only the canonical pack is
+// registered today, so any other active id yields empty lists (never
+// foreign content under a new id).
+function packItems(): Item[] {
+  if (activeSeedId !== SEED_ID) return [];
+  return canonicalSeedItems();
+}
+
+function packEvents(): Event[] {
+  if (activeSeedId !== SEED_ID) return [];
+  return canonicalSeedEvents();
+}
 
 function isBrowser(): boolean {
   return typeof window !== "undefined";
@@ -108,7 +160,10 @@ function canonicalSeedEvents(): Event[] {
 }
 
 function buildMeta(): SeedMeta {
-  return { seedId: SEED_ID, hash: canonicalSeedHash() };
+  return {
+    seedId: activeSeedId,
+    hash: activeSeedId === SEED_ID ? canonicalSeedHash() : "no-pack",
+  };
 }
 
 // Per-record filtering (G3): one malformed stored record no longer wipes
@@ -143,9 +198,9 @@ function persistAll(items: Item[], events: Event[], meta: SeedMeta): void {
   const eventsJson = JSON.stringify(events);
   const metaJson = JSON.stringify(meta);
   // Byte-identical on repeat runs: same input objects serialize identically.
-  writeKey(ITEMS_KEY, itemsJson);
-  writeKey(EVENTS_KEY, eventsJson);
-  writeKey(META_KEY, metaJson);
+  writeKey(queueKeys(activeSeedId).items, itemsJson);
+  writeKey(queueKeys(activeSeedId).events, eventsJson);
+  writeKey(queueKeys(activeSeedId).meta, metaJson);
   memoryItems = JSON.parse(itemsJson) as Item[];
   memoryEvents = JSON.parse(eventsJson) as Event[];
   memoryMeta = JSON.parse(metaJson) as SeedMeta;
@@ -154,8 +209,8 @@ function persistAll(items: Item[], events: Event[], meta: SeedMeta): void {
 // Seed the store only when empty/malformed. Never wipes valid existing
 // state (user submissions from P2+ survive). Safe to call on every mount.
 export function ensureSeeded(): Item[] {
-  const items = canonicalSeedItems();
-  const events = canonicalSeedEvents();
+  const items = packItems();
+  const events = packEvents();
   const meta = buildMeta();
   if (!isBrowser()) {
     if (memoryItems === null) {
@@ -165,22 +220,22 @@ export function ensureSeeded(): Item[] {
     }
     return memoryItems;
   }
-  const stored = parseItems(readKey(ITEMS_KEY));
-  const storedMeta = readKey(META_KEY);
+  const stored = parseItems(readKey(queueKeys(activeSeedId).items));
+  const storedMeta = readKey(queueKeys(activeSeedId).meta);
   if (stored !== null && storedMeta !== null) {
     try {
       const m = JSON.parse(storedMeta) as Partial<SeedMeta>;
-      if (m.seedId === SEED_ID && m.hash === meta.hash) {
+      if (m.seedId === activeSeedId && m.hash === meta.hash) {
         memoryItems = stored;
-        memoryEvents = parseEvents(readKey(EVENTS_KEY)) ?? [];
+        memoryEvents = parseEvents(readKey(queueKeys(activeSeedId).events)) ?? [];
         memoryMeta = m as SeedMeta;
         return stored;
       }
       // Same seed id but stale hash: keep user state, just refresh meta.
-      if (m.seedId === SEED_ID) {
-        writeKey(META_KEY, JSON.stringify(meta));
+      if (m.seedId === activeSeedId) {
+        writeKey(queueKeys(activeSeedId).meta, JSON.stringify(meta));
         memoryItems = stored;
-        memoryEvents = parseEvents(readKey(EVENTS_KEY)) ?? [];
+        memoryEvents = parseEvents(readKey(queueKeys(activeSeedId).events)) ?? [];
         memoryMeta = meta;
         return stored;
       }
@@ -190,9 +245,9 @@ export function ensureSeeded(): Item[] {
   }
   if (stored !== null && storedMeta === null) {
     // Items valid but meta missing (e.g. cleared keys): restore meta only.
-    writeKey(META_KEY, JSON.stringify(meta));
+    writeKey(queueKeys(activeSeedId).meta, JSON.stringify(meta));
     memoryItems = stored;
-    memoryEvents = parseEvents(readKey(EVENTS_KEY)) ?? [];
+    memoryEvents = parseEvents(readKey(queueKeys(activeSeedId).events)) ?? [];
     memoryMeta = meta;
     return stored;
   }
@@ -203,8 +258,8 @@ export function ensureSeeded(): Item[] {
 // Overwrite the store with canonical seeds. Idempotent: byte-identical
 // storage on repeat runs, no duplicates. Used by `?demo=1`.
 export function reseedDemo(): Item[] {
-  const items = canonicalSeedItems();
-  persistAll(items, canonicalSeedEvents(), buildMeta());
+  const items = packItems();
+  persistAll(items, packEvents(), buildMeta());
   return items;
 }
 
@@ -212,27 +267,27 @@ export function reseedDemo(): Item[] {
 // back to a full reseed so the board never renders a broken queue.
 export function listItems(): Item[] {
   if (!isBrowser()) {
-    return memoryItems ?? canonicalSeedItems();
+    return memoryItems ?? packItems();
   }
-  const stored = parseItems(readKey(ITEMS_KEY));
+  const stored = parseItems(readKey(queueKeys(activeSeedId).items));
   if (stored !== null) {
     memoryItems = stored;
     return stored;
   }
   // localStorage readable but malformed/absent: reseed fallback.
   // If writes also fail (quota), serve the in-memory mirror.
-  const items = canonicalSeedItems();
+  const items = packItems();
   const meta = buildMeta();
-  const ok = writeKey(ITEMS_KEY, JSON.stringify(items));
+  const ok = writeKey(queueKeys(activeSeedId).items, JSON.stringify(items));
   if (!ok) {
     if (memoryItems === null) {
       memoryItems = items;
-      memoryEvents = [];
+      memoryEvents = packEvents();
       memoryMeta = meta;
     }
     return memoryItems;
   }
-  persistAll(items, canonicalSeedEvents(), meta);
+  persistAll(items, packEvents(), meta);
   return items;
 }
 
@@ -243,7 +298,7 @@ export function getItem(id: string): Item | null {
 
 export function listEvents(): Event[] {
   if (!isBrowser()) return memoryEvents;
-  const stored = parseEvents(readKey(EVENTS_KEY));
+  const stored = parseEvents(readKey(queueKeys(activeSeedId).events));
   if (stored !== null) {
     memoryEvents = stored;
     return stored;
@@ -328,13 +383,13 @@ const NEXT_ID_BASE = 1011;
 
 function readP3Meta(): SeedMeta {
   const fallback: SeedMeta = {
-    seedId: SEED_ID,
-    hash: canonicalSeedHash(),
+    seedId: activeSeedId,
+    hash: activeSeedId === SEED_ID ? canonicalSeedHash() : "no-pack",
     seq: 0,
   };
   try {
     if (!isBrowser()) {
-      if (memoryMeta !== null && memoryMeta.seedId === SEED_ID) {
+      if (memoryMeta !== null && memoryMeta.seedId === activeSeedId) {
         const s = memoryMeta.seq;
         return {
           ...fallback,
@@ -346,9 +401,9 @@ function readP3Meta(): SeedMeta {
       }
       return fallback;
     }
-    const raw = readKey(META_KEY);
+    const raw = readKey(queueKeys(activeSeedId).meta);
     if (raw === null) {
-      if (memoryMeta !== null && memoryMeta.seedId === SEED_ID) {
+      if (memoryMeta !== null && memoryMeta.seedId === activeSeedId) {
         const s = memoryMeta.seq;
         return {
           ...fallback,
@@ -361,10 +416,10 @@ function readP3Meta(): SeedMeta {
       return fallback;
     }
     const m = JSON.parse(raw) as Partial<SeedMeta>;
-    if (m.seedId !== SEED_ID) return fallback;
+    if (m.seedId !== activeSeedId) return fallback;
     const s = m.seq;
     return {
-      seedId: SEED_ID,
+      seedId: activeSeedId,
       hash: fallback.hash,
       seq: typeof s === "number" && Number.isInteger(s) && s >= 0 ? s : 0,
     };
@@ -383,9 +438,9 @@ function persistP3State(
   const metaJson = JSON.stringify(meta);
   // Best-effort localStorage writes (quota/private-mode may fail); the
   // in-memory mirror is always updated so the queue still works (E11).
-  writeKey(ITEMS_KEY, itemsJson);
-  writeKey(EVENTS_KEY, eventsJson);
-  writeKey(META_KEY, metaJson);
+  writeKey(queueKeys(activeSeedId).items, itemsJson);
+  writeKey(queueKeys(activeSeedId).events, eventsJson);
+  writeKey(queueKeys(activeSeedId).meta, metaJson);
   memoryItems = JSON.parse(itemsJson) as Item[];
   memoryEvents = JSON.parse(eventsJson) as Event[];
   memoryMeta = JSON.parse(metaJson) as SeedMeta;

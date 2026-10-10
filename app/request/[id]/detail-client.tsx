@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  confirmNote,
   loadPersistedPrefs,
   resolveAppConfig,
   t,
@@ -22,6 +23,7 @@ import {
   getItem,
   listEvents,
   listItems,
+  setActiveSeedId,
   transitionItem,
 } from "../../../lib/store";
 
@@ -71,11 +73,15 @@ export default function DetailClient({ id }: { id: string }) {
   const [dupTarget, setDupTarget] = useState("");
   const [processing, setProcessing] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  // AD-3 confirm gate: arming key for terminal actions (Resolve/Reject)
+  // when cfg.confirm is on. First click arms, second executes.
+  const [armed, setArmed] = useState<string | null>(null);
 
   const lang: Lang = resolveAppConfig(query, prefs).lang;
   // P4-A SIMPLE_MODE on this screen: hide the duplicate SUGGESTIONS section;
   // the hard-link panel ("Linked duplicate") always stays.
   const simple = resolveAppConfig(query, prefs).simpleMode;
+  const confirm = resolveAppConfig(query, prefs).confirm;
 
   useEffect(() => {
     setMounted(true);
@@ -86,11 +92,13 @@ export default function DetailClient({ id }: { id: string }) {
         lang: sp.get("lang") ?? undefined,
         simple: sp.get("simple") ?? undefined,
         demo: sp.get("demo") ?? undefined,
+        seed: sp.get("seed") ?? undefined,
       };
       setQuery(q);
       const stored = loadPersistedPrefs();
       setPrefs(stored);
       setRole(resolveAppConfig(q, stored).role);
+      setActiveSeedId(resolveAppConfig(q, stored).seedId);
     } catch {
       // URL/storage unreadable: defaults stand.
     }
@@ -187,18 +195,25 @@ export default function DetailClient({ id }: { id: string }) {
     item.status === "duplicate";
   const busy = processing !== null;
 
-  function doTransition(to: Status, label: string, extra?: { duplicateOfId?: string }) {
+  function doTransition(to: Status, label: string, extra?: { duplicateOfId?: string }, confirmed = false) {
     if (item === null || item === undefined) return;
     const itemId = item.id;
     setProcessing(label);
     setBanner(null);
+    setArmed(null);
     // setTimeout keeps the disabled state paintable on double-click (E6).
     window.setTimeout(() => {
+      const rawNote = note.trim();
+      const finalNote = confirmed
+        ? confirmNote(note)
+        : rawNote.length > 0
+          ? rawNote
+          : undefined;
       const res = transitionItem(
         itemId,
         to,
         role,
-        note.trim().length > 0 ? note : undefined,
+        finalNote,
         extra?.duplicateOfId,
       );
       if (res.ok) {
@@ -230,7 +245,10 @@ export default function DetailClient({ id }: { id: string }) {
         <select
           id="detail-role"
           value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
+          onChange={(e) => {
+            setRole(e.target.value as Role);
+            setArmed(null);
+          }}
           className="min-h-[44px] w-full max-w-xs rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
         >
           <option value="student">Student</option>
@@ -440,10 +458,18 @@ export default function DetailClient({ id }: { id: string }) {
                 role !== "coordinator" ||
                 !canTransition(item.status, "rejected")
               }
-              onClick={() => doTransition("rejected", "reject")}
+              onClick={() => {
+                if (confirm && armed !== "rejected") {
+                  setArmed("rejected");
+                  return;
+                }
+                doTransition("rejected", "reject", undefined, confirm);
+              }}
               className="min-h-[44px] rounded border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              {t("detailReject", lang)}
+              {armed === "rejected" && confirm
+                ? t("confirmAgain", lang)
+                : t("detailReject", lang)}
             </button>
             {stepper.map((s) => (
               <button
@@ -453,10 +479,19 @@ export default function DetailClient({ id }: { id: string }) {
                   busy || decided || !canTransition(item.status, s.to) ||
                   (role !== "coordinator" && role !== "assignee")
                 }
-                onClick={() => doTransition(s.to, s.to)}
+                onClick={() => {
+                  const needsArm = s.to === "resolved" && confirm;
+                  if (needsArm && armed !== "resolved") {
+                    setArmed("resolved");
+                    return;
+                  }
+                  doTransition(s.to, s.to, undefined, needsArm);
+                }}
                 className="min-h-[44px] rounded border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
               >
-                {s.label}
+                {s.to === "resolved" && armed === "resolved" && confirm
+                  ? t("confirmAgain", lang)
+                  : s.label}
               </button>
             ))}
           </div>

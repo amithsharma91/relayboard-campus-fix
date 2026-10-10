@@ -10,7 +10,7 @@ import {
   type Lang,
 } from "../../lib/config";
 import { CATEGORIES } from "../../lib/schema";
-import { createItem } from "../../lib/store";
+import { createItem, setActiveSeedId } from "../../lib/store";
 
 // Plain-text invariant: title/description/location are stored VERBATIM (no
 // server HTML-strip on this client path). Rendering relies on React
@@ -27,12 +27,18 @@ function SubmitInner() {
   // mismatch), persisted prefs apply in useEffect. Submit needs only lang;
   // reporter role is hardcoded to student at the store boundary.
   const query = useMemo(
-    () => ({ lang: params.get("lang") ?? undefined }),
+    () => ({
+      lang: params.get("lang") ?? undefined,
+      seed: params.get("seed") ?? undefined,
+    }),
     [params],
   );
   const [lang, setLang] = useState<Lang>("en");
   useEffect(() => {
-    setLang(resolveAppConfig(query, loadPersistedPrefs()).lang);
+    const cfg = resolveAppConfig(query, loadPersistedPrefs());
+    setLang(cfg.lang);
+    // New reports land in the active ?seed= namespace (board-driven default).
+    setActiveSeedId(cfg.seedId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
   const [title, setTitle] = useState("");

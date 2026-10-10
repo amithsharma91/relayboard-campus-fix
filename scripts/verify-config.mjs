@@ -56,8 +56,10 @@ const {
   SEED_ID,
   PREFS_KEY,
   parseAppConfig,
+  parseSeedId,
   resolveAppConfig,
   loadPersistedPrefs,
+  confirmNote,
   t,
 } = config;
 
@@ -249,6 +251,68 @@ for (const k of [
 ]) {
   check(typeof dict.en[k] === "string", `en covers ${k}`);
 }
+
+// --- AD-3 confirm gate + AD-5 seed switch (P5) ---
+check(
+  parseAppConfig({}).confirm === true,
+  "default confirm true (protective)",
+);
+check(
+  parseAppConfig({ confirm: "0" }).confirm === false,
+  "?confirm=0 disables",
+);
+check(
+  parseAppConfig({ confirm: "1" }).confirm === true,
+  "?confirm=1 enables",
+);
+check(
+  resolveAppConfig({}, { confirm: false }).confirm === false,
+  "persisted confirm false applies",
+);
+check(
+  resolveAppConfig({}, { confirm: "yes" }).confirm === true,
+  "invalid persisted confirm dropped to default",
+);
+check(
+  resolveAppConfig({ confirm: "0" }, { confirm: true }).confirm === false,
+  "present ?confirm=0 wins over persisted true",
+);
+check(
+  confirmNote("") === "confirmed inline",
+  "confirmNote empty → confirmed inline",
+);
+check(
+  confirmNote("  needs electrician  ") ===
+    "needs electrician (confirmed inline)",
+  "confirmNote preserves user note + records confirmation",
+);
+check(
+  parseAppConfig({}).seedId === SEED_ID,
+  "default seedId canonical",
+);
+check(
+  parseAppConfig({ seed: "campus-maint-v1" }).seedId === SEED_ID,
+  "?seed=canonical selects canonical namespace",
+);
+for (const bad of ["evil!", "../x", "", "CAMPUS-MAINT-V1", "other-pack"]) {
+  check(
+    parseAppConfig({ seed: bad }).seedId === SEED_ID,
+    `?seed=${JSON.stringify(bad)} falls back to default`,
+  );
+}
+check(
+  parseSeedId("campus-maint-v1") === SEED_ID,
+  "parseSeedId accepts registered id",
+);
+check(
+  resolveAppConfig({}, { seedId: "evil" }).seedId === SEED_ID,
+  "seedId never taken from persisted prefs",
+);
+check(
+  typeof dict.en.confirmAgain === "string" &&
+    typeof dict.hi.confirmAgain === "string",
+  "confirmAgain covered in en + hi",
+);
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures > 0 ? 1 : 0);

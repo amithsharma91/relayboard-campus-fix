@@ -30,6 +30,7 @@
     "detailMarkDuplicate": "Mark duplicate",
     "detailNotDuplicate": "Not a duplicate",
     "detailTimeline": "Timeline",
+    "confirmAgain": "Click again to confirm",
     "statusOpen": "Open",
     "statusApproved": "Approved",
     "statusInProgress": "In Progress",
@@ -49,6 +50,7 @@
     "boardEmpty": "कोई समस्या मेल नहीं खाती।",
     "submitTitle": "समस्या दर्ज करें",
     "submitButton": "समस्या दर्ज करें",
-    "detailApprove": "स्वीकृत करें"
+    "detailApprove": "स्वीकृत करें",
+    "confirmAgain": "पुष्टि के लिए फिर से क्लिक करें"
   }
 }
