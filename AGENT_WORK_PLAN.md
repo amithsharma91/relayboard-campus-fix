@@ -25,6 +25,17 @@ P3 review UI (D): request/[id] + action card + stepper + timeline + export → F
 P4 switches (E): config.ts + i18n.json + role/seed/lang overrides + SIMPLE_MODE guards.
 P5 gates (F): full ACCEPTANCE_TESTS on preview → prod freeze → backup video.
 ```
+
+> P4 scope note (added P4, lead): as built, P4 ships query+persisted switches
+> for role/lang/simple/demo only (`REQUIRE_CONFIRM`, `STORAGE`, `?seed` are
+> NOT implemented — AD-3/AD-5 cannot be exercised through switches yet).
+> P4 additionally closes the P3 F4/F8 gaps: deterministic duplicate
+> suggestions (`lib/duplicates.ts`, same-location gate + ≥0.5 overlap, top-3),
+> board search + dup badges, and an auditable unmark path via the minimal
+> schema edge `duplicate→open` (history preserved with `status_changed`;
+> endorsed by Agent C). G4 AD coverage is therefore AD-1 (rule default),
+> AD-2 (SIMPLE_MODE), AD-4 (lang fallback), AD-6-partial (export/roles);
+> AD-3/AD-5 remain scheduled, not claimed.
 Optional only after P5 green: photo preview polish, hi key fill, transcript-paste stub, extra seeds.
 
 ## 3. Dependencies

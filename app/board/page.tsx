@@ -4,6 +4,15 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { buildCsv, exportFilename } from "../../lib/csv";
+import {
+  loadPersistedPrefs,
+  resolveAppConfig,
+  savePersistedPrefs,
+  t,
+  type Lang,
+  type PersistedPrefs,
+} from "../../lib/config";
+import { suggestDuplicates } from "../../lib/duplicates";
 import type { Item, Role, Severity, Status } from "../../lib/schema";
 import { ensureSeeded, listItems, reseedDemo } from "../../lib/store";
 
@@ -27,7 +36,18 @@ const STATUS_OPTIONS: Array<{ value: StatusFilter; label: string }> = [
   { value: "duplicate", label: "Duplicate" },
 ];
 
-function QueueCard({ item }: { item: Item }) {
+// P4-B search normalization: lowercase, punctuation/whitespace collapsed.
+// Same normalization as the duplicates location gate, applied to the
+// title+description+location haystack and the needle (substring match).
+function normSearch(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function QueueCard({ item, dupCount }: { item: Item; dupCount: number }) {
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -41,6 +61,19 @@ function QueueCard({ item }: { item: Item }) {
         </span>
         <span className="font-mono text-xs text-zinc-400">{item.short}</span>
         <span className="flex-1" />
+        {dupCount > 0 && (
+          <span
+            className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900"
+            title="Possible duplicates suggested by word overlap"
+          >
+            &times;{dupCount} possible dup{dupCount === 1 ? "" : "s"}
+          </span>
+        )}
+        {item.duplicateOfId !== null && (
+          <span className="rounded-full bg-zinc-200 px-2 py-0.5 font-mono text-xs text-zinc-700">
+            duplicate of {item.duplicateOfId}
+          </span>
+        )}
         <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
           {item.status}
         </span>
@@ -62,27 +95,76 @@ function QueueCard({ item }: { item: Item }) {
 
 function BoardInner() {
   const params = useSearchParams();
-  const demo = params.get("demo") === "1";
+  // P4-A: components render defaults pre-mount (SSR/first paint agree — no
+  // hydration mismatch); persisted prefs apply in useEffect below.
+  const query = useMemo(
+    () => ({
+      role: params.get("role") ?? undefined,
+      lang: params.get("lang") ?? undefined,
+      simple: params.get("simple") ?? undefined,
+      demo: params.get("demo") ?? undefined,
+    }),
+    [params],
+  );
+  const [prefs, setPrefs] = useState<PersistedPrefs>({});
   const [items, setItems] = useState<Item[] | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortMode, setSortMode] = useState<SortMode>("priority");
+  const [search, setSearch] = useState("");
   const [role, setRole] = useState<Role>("coordinator");
 
+  const cfg = resolveAppConfig(query, prefs);
+  const demo = cfg.demo;
+  const lang: Lang = cfg.lang;
+  // P4-A SIMPLE_MODE: hide sort select + export button on this screen (the
+  // detail screen hides the duplicate SUGGESTIONS section; the hard-link
+  // panel stays). Board badges + filters + submit→review→resolve keep
+  // working; store auth/validation are never bypassed.
+  const simple = cfg.simpleMode;
+
   useEffect(() => {
+    const stored = loadPersistedPrefs();
+    setPrefs(stored);
+    setRole(resolveAppConfig(query, stored).role);
     if (demo) {
       reseedDemo();
     } else {
       ensureSeeded();
     }
     setItems(listItems());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo]);
+
+  function handleRole(next: Role) {
+    setRole(next);
+    setPrefs((prev) => {
+      const merged = { ...prev, role: next };
+      savePersistedPrefs({ role: next });
+      return merged;
+    });
+  }
+
+  // P4-B: suggestion counts per card (bounded scan inside suggestDuplicates).
+  const dupCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (items === null) return map;
+    for (const item of items) {
+      map.set(item.id, suggestDuplicates(item, items, 3).length);
+    }
+    return map;
+  }, [items]);
 
   const visible = useMemo(() => {
     if (items === null) return null;
-    const filtered =
-      statusFilter === "all"
-        ? [...items]
-        : items.filter((i) => i.status === statusFilter);
+    const needle = normSearch(search);
+    const filtered = items.filter((i) => {
+      if (statusFilter !== "all" && i.status !== statusFilter) return false;
+      if (needle.length > 0) {
+        const hay = normSearch(`${i.title} ${i.description} ${i.location}`);
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
     if (sortMode === "priority") {
       filtered.sort((a, b) => b.priority_score - a.priority_score);
     } else {
@@ -91,7 +173,7 @@ function BoardInner() {
       );
     }
     return filtered;
-  }, [items, statusFilter, sortMode]);
+  }, [items, statusFilter, sortMode, search]);
 
   function handleExport() {
     if (visible === null) return;
@@ -111,7 +193,7 @@ function BoardInner() {
     <section aria-labelledby="board-title" className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h1 id="board-title" className="text-2xl font-semibold">
-          Priority Board
+          {t("boardTitle", lang)}
         </h1>
         <span className="flex-1" />
         {demo && (
@@ -121,7 +203,7 @@ function BoardInner() {
         )}
         {visible !== null && (
           <span className="text-xs text-zinc-500" aria-live="polite">
-            {visible.length} records
+            {visible.length} {t("boardCount", lang)}
           </span>
         )}
       </div>
@@ -131,12 +213,12 @@ function BoardInner() {
             htmlFor="board-role"
             className="mb-1 block text-xs font-medium text-zinc-600"
           >
-            Mock role — demo only, not secure authentication
+            {t("roleLabel", lang)}
           </label>
           <select
             id="board-role"
             value={role}
-            onChange={(e) => setRole(e.target.value as Role)}
+            onChange={(e) => handleRole(e.target.value as Role)}
             className="min-h-[44px] rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
           >
             <option value="student">Student</option>
@@ -146,10 +228,26 @@ function BoardInner() {
         </div>
         <div>
           <label
+            htmlFor="board-search"
+            className="mb-1 block text-xs font-medium text-zinc-600"
+          >
+            {t("boardSearch", lang)}
+          </label>
+          <input
+            id="board-search"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("boardSearchPlaceholder", lang)}
+            className="min-h-[44px] w-full rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 sm:w-auto"
+          />
+        </div>
+        <div>
+          <label
             htmlFor="board-status"
             className="mb-1 block text-xs font-medium text-zinc-600"
           >
-            Status
+            {t("boardStatus", lang)}
           </label>
           <select
             id="board-status"
@@ -164,32 +262,36 @@ function BoardInner() {
             ))}
           </select>
         </div>
-        <div>
-          <label
-            htmlFor="board-sort"
-            className="mb-1 block text-xs font-medium text-zinc-600"
-          >
-            Sort
-          </label>
-          <select
-            id="board-sort"
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-            className="min-h-[44px] rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
-          >
-            <option value="priority">Priority↓</option>
-            <option value="newest">Newest</option>
-          </select>
-        </div>
+        {!simple && (
+          <div>
+            <label
+              htmlFor="board-sort"
+              className="mb-1 block text-xs font-medium text-zinc-600"
+            >
+              {t("boardSort", lang)}
+            </label>
+            <select
+              id="board-sort"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              className="min-h-[44px] rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+            >
+              <option value="priority">Priority↓</option>
+              <option value="newest">Newest</option>
+            </select>
+          </div>
+        )}
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={visible === null}
-          className="min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
-        >
-          Export CSV
-        </button>
+        {!simple && (
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={visible === null}
+            className="min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+          >
+            {t("boardExport", lang)}
+          </button>
+        )}
       </div>
       <div aria-live="polite">
         {visible === null ? (
@@ -206,18 +308,22 @@ function BoardInner() {
           </ul>
         ) : visible.length === 0 ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-4">
-            <p className="text-sm">No issues match this filter.</p>
+            <p className="text-sm">{t("boardEmpty", lang)}</p>
             <Link
               href="/submit"
               className="mt-2 inline-block min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm leading-[28px] text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              Submit one
+              {t("boardEmptyCta", lang)}
             </Link>
           </div>
         ) : (
           <ul className="space-y-3">
             {visible.map((item) => (
-              <QueueCard key={item.id} item={item} />
+              <QueueCard
+                key={item.id}
+                item={item}
+                dupCount={dupCounts.get(item.id) ?? 0}
+              />
             ))}
           </ul>
         )}

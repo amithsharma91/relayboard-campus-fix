@@ -612,7 +612,45 @@ export function transitionItem(
           error: `Duplicate target '${targetId}' not found.`,
         };
       }
+      // P4-C cycle prevention: walk the target's duplicateOfId chain (cap 50
+      // hops, bounded). Reject when the chain reaches the source id — no
+      // A→B→A cycles. Self/unknown/empty targets are already rejected above.
+      let cursor: string | null = targetId;
+      for (let hop = 0; hop < 50; hop++) {
+        if (cursor === null) break;
+        if (cursor === id) {
+          return {
+            ok: false,
+            error: "Marking duplicate would create a cycle.",
+          };
+        }
+        const current = items.find((i) => i.id === cursor) ?? null;
+        if (current === null) break;
+        cursor = current.duplicateOfId;
+      }
+      if (cursor === id) {
+        return {
+          ok: false,
+          error: "Marking duplicate would create a cycle.",
+        };
+      }
       nextDuplicateOfId = targetId;
+    }
+
+    // P4-C reversal: duplicate→open (coordinator only) clears the hard link.
+    // The role matrix above already blocks students (all transitions) and
+    // assignees (only approved→in_progress→resolved), but the explicit check
+    // keeps the error specific. History is preserved: a "status_changed"
+    // event (existing enum, from duplicate→open) is appended below and no
+    // prior event is removed.
+    if (from === "duplicate" && to === "open") {
+      if (actor !== "coordinator") {
+        return {
+          ok: false,
+          error: "Only coordinators can clear a duplicate link.",
+        };
+      }
+      nextDuplicateOfId = null;
     }
 
     const type: Event["type"] =

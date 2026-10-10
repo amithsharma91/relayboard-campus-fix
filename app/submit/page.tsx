@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import {
+  loadPersistedPrefs,
+  resolveAppConfig,
+  t,
+  type Lang,
+} from "../../lib/config";
 import { CATEGORIES } from "../../lib/schema";
 import { createItem } from "../../lib/store";
 
@@ -14,7 +21,20 @@ import { createItem } from "../../lib/store";
 
 const MAX_DESC = 2000;
 
-export default function SubmitPage() {
+function SubmitInner() {
+  const params = useSearchParams();
+  // Same P4-A pattern as board: defaults pre-mount (no hydration
+  // mismatch), persisted prefs apply in useEffect. Submit needs only lang;
+  // reporter role is hardcoded to student at the store boundary.
+  const query = useMemo(
+    () => ({ lang: params.get("lang") ?? undefined }),
+    [params],
+  );
+  const [lang, setLang] = useState<Lang>("en");
+  useEffect(() => {
+    setLang(resolveAppConfig(query, loadPersistedPrefs()).lang);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
   const [title, setTitle] = useState("");
   const [location, setLocation] = useState("");
   const [category, setCategory] = useState("");
@@ -67,7 +87,7 @@ export default function SubmitPage() {
   return (
     <section aria-labelledby="submit-title" className="mx-auto max-w-2xl space-y-4">
       <h1 id="submit-title" className="text-2xl font-semibold">
-        Submit Issue
+        {t("submitTitle", lang)}
       </h1>
       <form
         onSubmit={handleSubmit}
@@ -75,7 +95,7 @@ export default function SubmitPage() {
       >
         <div>
           <label htmlFor="submit-title-input" className="mb-1 block text-sm font-medium">
-            Title
+            {t("submitTitleLabel", lang)}
           </label>
           <input
             id="submit-title-input"
@@ -89,7 +109,7 @@ export default function SubmitPage() {
         </div>
         <div>
           <label htmlFor="submit-location" className="mb-1 block text-sm font-medium">
-            Location
+            {t("submitLocationLabel", lang)}
           </label>
           <input
             id="submit-location"
@@ -103,7 +123,7 @@ export default function SubmitPage() {
         </div>
         <div>
           <label htmlFor="submit-category" className="mb-1 block text-sm font-medium">
-            Category (optional — empty means auto)
+            {t("submitCategoryLabel", lang)}
           </label>
           <select
             id="submit-category"
@@ -122,7 +142,7 @@ export default function SubmitPage() {
         </div>
         <div>
           <label htmlFor="submit-desc" className="mb-1 block text-sm font-medium">
-            Description
+            {t("submitDescriptionLabel", lang)}
           </label>
           <textarea
             id="submit-desc"
@@ -158,7 +178,7 @@ export default function SubmitPage() {
             disabled={submitting}
             className="min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
           >
-            {submitting ? "Submitting…" : "Submit Issue"}
+            {submitting ? "Submitting…" : t("submitButton", lang)}
           </button>
           <Link
             href="/board"
@@ -194,5 +214,21 @@ export default function SubmitPage() {
         </div>
       </form>
     </section>
+  );
+}
+
+// Suspense boundary is mandatory: useSearchParams() without it fails the
+// static prerender (P0 lesson, same as board).
+export default function SubmitPage() {
+  return (
+    <Suspense
+      fallback={
+        <section aria-label="Loading submit form">
+          <p className="text-sm text-zinc-500">Loading…</p>
+        </section>
+      }
+    >
+      <SubmitInner />
+    </Suspense>
   );
 }

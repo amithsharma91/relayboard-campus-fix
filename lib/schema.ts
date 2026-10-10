@@ -218,7 +218,11 @@ const ALLOWED_TRANSITIONS: Record<Status, readonly Status[]> = {
   in_progress: ["resolved", "rejected"],
   resolved: [],
   rejected: [],
-  duplicate: [],
+  // P4-C reversal edge (the ONE authorized schema change): duplicate→open
+  // lets a coordinator undo a wrong mark via transitionItem, which clears
+  // duplicateOfId and appends a "status_changed" event. History is preserved
+  // (append-only; no event is deleted) and every other edge stays frozen.
+  duplicate: ["open"],
 };
 
 export function canTransition(from: Status, to: Status): boolean {

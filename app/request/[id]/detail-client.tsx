@@ -3,6 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  loadPersistedPrefs,
+  resolveAppConfig,
+  t,
+  type Lang,
+  type PersistedPrefs,
+} from "../../../lib/config";
+import { suggestDuplicates } from "../../../lib/duplicates";
+import {
   canTransition,
   validateEvent,
   type Event,
@@ -10,7 +18,12 @@ import {
   type Role,
   type Status,
 } from "../../../lib/schema";
-import { getItem, listEvents, transitionItem } from "../../../lib/store";
+import {
+  getItem,
+  listEvents,
+  listItems,
+  transitionItem,
+} from "../../../lib/store";
 
 const SEVERITY_CHIP: Record<Item["severity"], string> = {
   P0: "bg-red-600 text-white",
@@ -47,6 +60,11 @@ function eventLabel(e: Event): string {
 export default function DetailClient({ id }: { id: string }) {
   const [mounted, setMounted] = useState(false);
   const [role, setRole] = useState<Role>("coordinator");
+  // P4-A: defaults render pre-mount (no hydration mismatch); query + persisted
+  // prefs apply in the mount effect. window.location is read in useEffect
+  // (not useSearchParams) so this route needs no Suspense boundary.
+  const [prefs, setPrefs] = useState<PersistedPrefs>({});
+  const [query, setQuery] = useState<Record<string, string | undefined>>({});
   const [item, setItem] = useState<Item | null | undefined>(undefined);
   const [events, setEvents] = useState<Event[]>([]);
   const [note, setNote] = useState("");
@@ -54,8 +72,28 @@ export default function DetailClient({ id }: { id: string }) {
   const [processing, setProcessing] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
+  const lang: Lang = resolveAppConfig(query, prefs).lang;
+  // P4-A SIMPLE_MODE on this screen: hide the duplicate SUGGESTIONS section;
+  // the hard-link panel ("Linked duplicate") always stays.
+  const simple = resolveAppConfig(query, prefs).simpleMode;
+
   useEffect(() => {
     setMounted(true);
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const q: Record<string, string | undefined> = {
+        role: sp.get("role") ?? undefined,
+        lang: sp.get("lang") ?? undefined,
+        simple: sp.get("simple") ?? undefined,
+        demo: sp.get("demo") ?? undefined,
+      };
+      setQuery(q);
+      const stored = loadPersistedPrefs();
+      setPrefs(stored);
+      setRole(resolveAppConfig(q, stored).role);
+    } catch {
+      // URL/storage unreadable: defaults stand.
+    }
     const found = getItem(id);
     setItem(found);
     const all = listEvents().filter(
@@ -81,6 +119,33 @@ export default function DetailClient({ id }: { id: string }) {
     return getItem(item.duplicateOfId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.duplicateOfId, item?.id, mounted]);
+
+  // P4-B suggestions: same-location word-overlap candidates (pure display;
+  // any link still requires an explicit coordinator Mark click). Recomputed
+  // when the item or its event count changes (mark/unmark refresh both).
+  const suggestions = useMemo(() => {
+    if (item === null || item === undefined) return [];
+    try {
+      return suggestDuplicates(item, listItems(), 3);
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, item?.status, item?.duplicateOfId, events.length, mounted]);
+
+  const suggestionTitles = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of suggestions) {
+      try {
+        const target = getItem(s.id);
+        if (target !== null) map.set(s.id, target.title);
+      } catch {
+        // Leave title unresolved; id still renders.
+      }
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions]);
 
   if (!mounted || item === undefined) {
     return (
@@ -160,7 +225,7 @@ export default function DetailClient({ id }: { id: string }) {
           htmlFor="detail-role"
           className="mb-1 block text-sm font-medium"
         >
-          Mock role — demo only, not secure authentication
+          {t("roleLabel", lang)}
         </label>
         <select
           id="detail-role"
@@ -220,7 +285,7 @@ export default function DetailClient({ id }: { id: string }) {
       )}
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold">Description</h2>
+        <h2 className="text-sm font-semibold">{t("detailDescription", lang)}</h2>
         <p className="mt-1 break-words text-sm">{item.description}</p>
       </div>
 
@@ -244,31 +309,101 @@ export default function DetailClient({ id }: { id: string }) {
         </div>
       </dl>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold">Duplicates</h2>
-        {item.duplicateOfId === null ? (
-          <p className="mt-1 text-sm text-zinc-500">
-            No linked duplicates.
-          </p>
-        ) : dupTargetItem !== null ? (
-          <p className="mt-1 text-sm">
-            Possible duplicate of{" "}
-            <Link
-              href={`/request/${dupTargetItem.id}`}
-              className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+      <div className="space-y-4 rounded-lg border border-zinc-200 bg-white p-4">
+        <h2 className="text-sm font-semibold">{t("detailDuplicates", lang)}</h2>
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            {t("detailLinkedDuplicate", lang)}
+          </h3>
+          {item.duplicateOfId === null ? (
+            <p className="mt-1 text-sm text-zinc-500">
+              No linked duplicates.
+            </p>
+          ) : dupTargetItem !== null ? (
+            <p className="mt-1 text-sm">
+              Possible duplicate of{" "}
+              <Link
+                href={`/request/${dupTargetItem.id}`}
+                className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+              >
+                {dupTargetItem.id} — {dupTargetItem.title}
+              </Link>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-zinc-500">
+              Linked duplicate {item.duplicateOfId} not found.
+            </p>
+          )}
+          {item.status === "duplicate" && role === "coordinator" && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => doTransition("open", "unmark")}
+              className="mt-2 min-h-[44px] rounded border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              {dupTargetItem.id} — {dupTargetItem.title}
-            </Link>
-          </p>
-        ) : (
-          <p className="mt-1 text-sm text-zinc-500">
-            Linked duplicate {item.duplicateOfId} not found.
-          </p>
+              {t("detailNotDuplicate", lang)}
+            </button>
+          )}
+        </div>
+        {!simple && (
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              {t("detailPossibleDuplicates", lang)}
+            </h3>
+            {suggestions.length === 0 ? (
+              <p className="mt-1 text-sm text-zinc-500">
+                No similar reports found.
+              </p>
+            ) : (
+              <ul className="mt-2 space-y-2">
+                {suggestions.map((s) => (
+                  <li
+                    key={s.id}
+                    className="flex flex-col gap-2 rounded border border-zinc-200 p-2 text-sm sm:flex-row sm:items-center"
+                  >
+                    <span className="min-w-0 flex-1 break-words">
+                      <span className="font-mono">{s.id}</span>
+                      {suggestionTitles.has(s.id) && (
+                        <span> — {suggestionTitles.get(s.id)}</span>
+                      )}{" "}
+                      <span className="text-zinc-500">
+                        (similarity {Math.round(s.score * 100)}%)
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 gap-2">
+                      <Link
+                        href={`/request/${s.id}`}
+                        className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+                      >
+                        View
+                      </Link>
+                      {role === "coordinator" && (
+                        <button
+                          type="button"
+                          disabled={
+                            busy || !canTransition(item.status, "duplicate")
+                          }
+                          onClick={() =>
+                            doTransition("duplicate", `mark-${s.id}`, {
+                              duplicateOfId: s.id,
+                            })
+                          }
+                          className="min-h-[44px] rounded border border-zinc-300 px-3 py-2 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+                        >
+                          Mark
+                        </button>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold">Review actions</h2>
+        <h2 className="text-sm font-semibold">{t("detailReviewActions", lang)}</h2>
         <div className="mt-2">
           <label htmlFor="action-note" className="mb-1 block text-sm font-medium">
             Note (optional)
@@ -295,7 +430,7 @@ export default function DetailClient({ id }: { id: string }) {
               onClick={() => doTransition("approved", "approve")}
               className="min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              Approve
+              {t("detailApprove", lang)}
             </button>
             <button
               type="button"
@@ -308,7 +443,7 @@ export default function DetailClient({ id }: { id: string }) {
               onClick={() => doTransition("rejected", "reject")}
               className="min-h-[44px] rounded border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              Reject
+              {t("detailReject", lang)}
             </button>
             {stepper.map((s) => (
               <button
@@ -352,7 +487,7 @@ export default function DetailClient({ id }: { id: string }) {
                   }
                   className="min-h-[44px] shrink-0 rounded border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
                 >
-                  Mark duplicate
+                  {t("detailMarkDuplicate", lang)}
                 </button>
               </div>
             </div>
@@ -381,7 +516,12 @@ export default function DetailClient({ id }: { id: string }) {
               {banner.text}
             </p>
           )}
-          {decided && banner === null && (
+          {decided && banner === null && item.status !== "duplicate" && (
+            <p className="rounded bg-zinc-100 p-2 text-sm text-zinc-700">
+              This report is {item.status}; no further actions.
+            </p>
+          )}
+          {decided && banner === null && item.status === "duplicate" && role !== "coordinator" && (
             <p className="rounded bg-zinc-100 p-2 text-sm text-zinc-700">
               This report is {item.status}; no further actions.
             </p>
@@ -390,7 +530,7 @@ export default function DetailClient({ id }: { id: string }) {
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold">Timeline</h2>
+        <h2 className="text-sm font-semibold">{t("detailTimeline", lang)}</h2>
         {events.length === 0 ? (
           <p className="mt-1 text-sm text-zinc-500">No events yet.</p>
         ) : (
