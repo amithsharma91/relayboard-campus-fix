@@ -24,13 +24,13 @@ export default function RootLayout({
             <span className="flex-1" />
             <Link
               href="/submit"
-              className="rounded px-2 py-1 text-sm underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+              className="inline-flex min-h-[44px] items-center rounded px-2 py-1 text-sm underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
               Submit
             </Link>
             <Link
               href="/board"
-              className="rounded px-2 py-1 text-sm underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+              className="inline-flex min-h-[44px] items-center rounded px-2 py-1 text-sm underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
               Board
             </Link>
