@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+.next/
+out/
+
+# env (never commit real keys)
+.env*
+!.env.example
+
+# logs / OS
+npm-debug.log*
+.DS_Store
+
+# vercel
+.vercel
