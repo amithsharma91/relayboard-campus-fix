@@ -10,7 +10,7 @@
 // running reseedDemo() twice yields byte-identical storage with no dupes.
 
 import seedData from "./seed.json";
-import { validateItem, type Event, type Item } from "./schema";
+import { validateEvent, validateItem, type Event, type Item } from "./schema";
 
 export const SEED_ID = "campus-maint-v1";
 
@@ -86,6 +86,7 @@ function parseEvents(raw: string | null): Event[] | null {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
+    if (!parsed.every(validateEvent)) return null;
     return parsed as Event[];
   } catch {
     return null;

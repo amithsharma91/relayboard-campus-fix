@@ -29,7 +29,7 @@ Narrator hint footer on board in demo mode (one line). Sound-muted test: queue �
 | 9 | Elevator stuck btw floors | SCI B | facility/P1 | Safety-adjacent |
 | 10 | Wobbly chair squeaks | LIB 410 | facility/P3 | Low anchor + `help my thing broken`→other/P3/request_more_info backup |
 
-Pre-seed via `?demo=1`. Open on #1. Submit #3 live. Keep #10 for Q&A honesty (low conf).
+Pre-seed via `?demo=1`. Open on #1. Submit #3 live. Keep #10 for Q&A honesty (lowest-priority P3 anchor, conf 0.75 Medium band — use a live `help my thing broken` input for a true low-confidence demo). Corrected P2 (was: "low conf").
 
 ## 3. Expected outputs (judge sees vs not claimed)
 

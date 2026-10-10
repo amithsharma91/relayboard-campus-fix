@@ -131,6 +131,17 @@ export function isStatus(u: unknown): u is Status {
   );
 }
 
+export function isEventType(u: unknown): u is Event["type"] {
+  return (
+    u === "created" ||
+    u === "classified" ||
+    u === "approved" ||
+    u === "status_changed" ||
+    u === "marked_duplicate" ||
+    u === "rejected"
+  );
+}
+
 function isNonEmptyString(u: unknown): u is string {
   return typeof u === "string" && u.length > 0;
 }
@@ -168,7 +179,7 @@ export function validateItem(u: unknown): u is Item {
     o.confidence > 1
   )
     return false;
-  if (o.duplicateOfId !== null && typeof o.duplicateOfId !== "string")
+  if (o.duplicateOfId !== null && !isNonEmptyString(o.duplicateOfId))
     return false;
   if (!isNonEmptyString(o.contentHash)) return false;
   if (!isRole(o.createdBy)) return false;
@@ -178,9 +189,29 @@ export function validateItem(u: unknown): u is Item {
   return true;
 }
 
+export function validateEvent(u: unknown): u is Event {
+  if (u === null || typeof u !== "object") return false;
+  const o = u as Record<string, unknown>;
+  if (!isNonEmptyString(o.id)) return false;
+  if (!isNonEmptyString(o.itemId)) return false;
+  if (!isRole(o.actor)) return false;
+  if (!isEventType(o.type)) return false;
+  if (o.from !== null && typeof o.from !== "string") return false;
+  if (!isNonEmptyString(o.to)) return false;
+  if (!isIsoDateString(o.at)) return false;
+  if (o.note !== undefined && typeof o.note !== "string") return false;
+  return true;
+}
+
 // Allowlisted transitions per blueprint §4. Terminal states (resolved,
 // rejected, duplicate) have no outgoing edges here; duplicate-linking rules
 // (duplicateOfId required) are enforced by callers in P2/P3.
+// Transition invariant for P2/P3 status writers (no status writer exists
+// yet): every mutation of Item.status MUST pass through
+// canTransition(from, to); any transition TO "duplicate" MUST also set a
+// non-empty duplicateOfId pointing at an existing item (validateItem rejects
+// ""); every transition MUST append an audit Event that passes
+// validateEvent (actor/type/from/to/at).
 const ALLOWED_TRANSITIONS: Record<Status, readonly Status[]> = {
   open: ["approved", "rejected", "duplicate"],
   approved: ["in_progress", "rejected"],

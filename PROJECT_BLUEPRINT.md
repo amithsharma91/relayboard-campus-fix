@@ -36,7 +36,7 @@
 - **Categories:** canonical 6: `wifi | classroom_equip | electrical | water | facility | other`. AI's `network_other` inputs map to `wifi` (wired/DNS noted in rationale). UI select shows 6 labels.
 - **Severity display:** P0=Urgent(red) / P1=High(orange) / P2=Med(amber) / P3=Low(zinc). Score 0-100 drives sort; bands P0 [85,100], P1 [65,84], P2 [35,64], P3 [0,34].
 - **Roles:** canonical 3 mock: Student / Coordinator / Assignee (maps to reporter/reviewer/assignee). Header toggle + `?role=`. Audit actor = role string. Default demo: Coordinator.
-- **Seeds:** canonical 10 rich seeds (covers all categories + 3 duplicate pairs + 1 P0 safety), not 25 (cut for 24h). `?demo=1` idempotently reseeds. Labeled "Demo data".
+- **Seeds:** canonical 10 rich seeds (covers five of six categories — `other` is reachable via live ambiguous input — plus 2 duplicate pairs + 1 P0 safety), not 25 (cut for 24h). Matches `lib/seed.json` and `DEMO_PLAN.md`; corrected P2 (was: "all categories + 3 pairs"). `?demo=1` idempotently reseeds. Labeled "Demo data".
 - **Storage:** localStorage-first namespaced `relayboard:{SEED_ID}:items/events`. No SQLite/Postgres in MVP (POST-MVP option only).
 - **File map:** §4 merges all agents (14 files max).
 
