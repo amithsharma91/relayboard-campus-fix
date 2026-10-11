@@ -22,17 +22,21 @@ Make the report submission flow easier to understand and use, particularly on mo
 - Made the submission confirmation easier to scan and gave the next steps clear links.
 - Kept the existing report submission and clustering flow.
 
-The code changes are in draft pull request [#1](https://github.com/amithsharma91/relayboard-campus-fix/pull/1). They are not merged yet.
+## Verification results
 
-## Verification status
+The project owner reports that these checks were run locally on branch `feedback/usability-ui` after fetching the branch and running `npm ci`. These results are transcribed from the local verification report; they were not executed by GitHub during this documentation update.
 
-- **Automated tests:** Not run through the GitHub editing workflow.
-- **TypeScript check:** Not run through the GitHub editing workflow.
-- **Production build:** Not run through the GitHub editing workflow.
-- **Manual mobile check:** Pending.
+- `npm run typecheck`: passed, exit code 0.
+- `npm run build`: passed, exit code 0; 18/18 static pages generated.
+- Existing test suites: all 7 passed — seed verification (`a21ee8d7`), 90/90, 68/68, 21/21, 76/76, 49/49, and 124/124 assertions.
+- `git diff --check`: passed.
+- Desktop browser check (Firefox 157, 1280px): required-field validation, successful submission, persistence, report/incident links, and near-duplicate workflow checked; zero console/page errors reported.
+- Mobile browser check (Firefox 157, 360px): successful submission, no horizontal overflow, and logical keyboard tab order reported.
+- Screenshots were saved locally under `/tmp/relayboard-demo-evidence/pr1-*.png`; they are not included in this repository by this documentation update.
 
-Before merging, run `npm run typecheck` and `npm run build` in the project environment, then test submitting a report on both desktop and a phone.
+## Remaining actions
 
-## Evidence note
-
-This is genuine feedback supplied by the project owner as a screenshot of a real conversation. The transcript above is a summary/transcription of the visible message, not a fabricated review. Keep the original screenshot as challenge evidence and share it publicly only with appropriate permission and privacy redactions.
+- Review and merge pull request #1.
+- Keep deployment on hold until the earlier Vercel alias/security concern and current Next.js advisories have been checked.
+- If sharing the WhatsApp screenshot publicly, obtain permission and redact private or unrelated information.
+- After merge, verify the deployed build and demo separately before sharing any public URL.
