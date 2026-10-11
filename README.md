@@ -43,10 +43,12 @@ canonical 10-seed dataset.
 
 Genuine owner-supplied WhatsApp feedback ("make it more easy to use and
 enhance the ui", 11 Oct 2026) drove usability work on the report form,
-reviewed as draft PR #1 (`feedback/usability-ui` branch): required-field
-markers, hints, optional category, friendly errors, 44–48px targets —
-typecheck/build/suites green, desktop+mobile browser-verified 12/12.
-See `feedback/README.md` on that branch. Not merged.
+merged into master via PR #1 (commit ea287aa55a2df5ac535f135c9bd6ddf5701cb4e9):
+required-field markers, hints, optional category, friendly errors,
+44–48px targets. Verified on the usability branch before merge
+(typecheck/build/suites green, desktop+mobile browser-verified 12/12) —
+distinct from the Phase 4 verification below, which ran on the earlier
+master baseline. See `feedback/README.md`, available on master.
 
 ## Submission instructions (Grevix AfterCode)
 
