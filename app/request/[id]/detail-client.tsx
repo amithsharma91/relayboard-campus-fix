@@ -234,7 +234,9 @@ function IncidentView({ id }: { id: string }) {
     const all = listIncidentEvents().filter(
       (e) => validateIncidentEvent(e) && e.incidentId === id,
     );
-    all.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.id < b.id ? -1 : 1));
+    // Chronological by `at`; ties keep storage (emission) order via stable
+    // sort — never by id (lexicographic id order misorders same-ms events).
+    all.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     setEvents(all);
     setOthers(
       listIncidents().filter((i) => i.id !== id && i.mergedIntoId === null),

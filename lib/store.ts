@@ -1335,7 +1335,7 @@ export function attachReportToIncident(
       };
     }
     const event: IncidentEvent = {
-      id: `${target.id}-attach-${reportId}-${Date.now()}`,
+      id: `${target.id}-attach-${reportId}-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: target.id,
       reportId,
       actor,
@@ -1454,7 +1454,7 @@ export function mergeIncidents(
       return inc;
     });
     const event: IncidentEvent = {
-      id: `${targetId}-merged-${sourceId}-${Date.now()}`,
+      id: `${targetId}-merged-${sourceId}-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: targetId,
       reportId: null,
       actor,
@@ -1538,7 +1538,7 @@ export function reclassifyIncident(
       return { ok: false, error: "Incident failed validation." };
     }
     const event: IncidentEvent = {
-      id: `${id}-reclassified-${Date.now()}`,
+      id: `${id}-reclassified-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: id,
       reportId: null,
       actor,
@@ -1606,7 +1606,7 @@ export function reassignIncident(
       return { ok: false, error: "Incident failed validation." };
     }
     const event: IncidentEvent = {
-      id: `${id}-reassigned-${Date.now()}`,
+      id: `${id}-reassigned-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: id,
       reportId: null,
       actor,
@@ -1706,7 +1706,7 @@ export function transitionIncident(
           : "status_changed";
     const now = new Date().toISOString();
     const event: IncidentEvent = {
-      id: `${id}-${from}-to-${to}-${Date.now()}`,
+      id: `${id}-${from}-to-${to}-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: id,
       reportId: null,
       actor,
@@ -1791,7 +1791,7 @@ export function verifyIncident(
       return { ok: false, error: "Incident failed validation." };
     }
     const event: IncidentEvent = {
-      id: `${id}-verified-${Date.now()}`,
+      id: `${id}-verified-${Date.now()}-${listIncidentEvents().length}`,
       incidentId: id,
       reportId: null,
       actor,

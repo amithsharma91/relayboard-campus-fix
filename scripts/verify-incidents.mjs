@@ -302,17 +302,19 @@ check(!badEdge.ok, "T9 invalid open->resolved fails");
 check(evCount() >= 3, "T9 events accumulated");
 (function t9order() {
   const evs = listIncidentEvents().filter((e) => e.incidentId === incA);
-  const sorted = [...evs].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.id < b.id ? -1 : 1));
+  // Chronological by `at`; ties keep storage (emission) order via stable
+  // sort — id tie-break actively misorders same-ms events (flaky T9).
+  const sorted = [...evs].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   check(
     evs.length >= 3 && JSON.stringify(evs.map((e) => e.id)) === JSON.stringify(sorted.map((e) => e.id)),
-    "T9 incident timeline chronological (+id tie-break)",
+    "T9 incident timeline chronological (stable emission order)",
   );
   const tied = [
     { id: "X-b", at: "2026-10-11T10:00:00Z" },
     { id: "X-a", at: "2026-10-11T10:00:00Z" },
     { id: "X-c", at: "2026-10-11T09:00:00Z" },
-  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.id < b.id ? -1 : 1));
-  check(tied[0].id === "X-c" && tied[1].id === "X-a", "T9 tie-break deterministic");
+  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  check(tied[0].id === "X-c" && tied[1].id === "X-b", "T9 tie-break stable (emission order deterministic)");
 })();
 const reopen = transitionIncident(incA, "in_progress", "student", "still broken here");
 check(reopen.ok && reopen.incident.status === "in_progress", "T9 student reopen resolved->in_progress ONLY");
