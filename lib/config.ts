@@ -205,6 +205,15 @@ export function savePersistedPrefs(patch: PersistedPrefs): void {
 
 export type I18nDict = typeof dict;
 
+// QA-found (Challenge-1 acceptance): /request and /board links must carry
+// the active seed namespace, otherwise detail pages land in the default
+// pack and show "not found". Omitted for the default pack (clean URLs).
+export function seedHref(path: string, seedId: string): string {
+  if (seedId === SEED_ID) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}seed=${encodeURIComponent(seedId)}`;
+}
+
 // t(key, lang, dict): UI string lookup that never crashes. Missing key in
 // the requested language falls back to English, then to the key itself.
 export function t(

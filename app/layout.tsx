@@ -3,7 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RelayBoard — Campus Fix (P0 skeleton)",
+  title: "RelayBoard — Campus Fix",
   description: "P0 runnable foundation. Queue logic lands in P1+.",
 };
 
@@ -16,11 +16,10 @@ export default function RootLayout({
     <html lang="en">
       <body className="bg-zinc-50 text-zinc-900">
         <header className="border-b border-zinc-200 bg-white">
-          <nav className="mx-auto flex max-w-5xl items-center gap-4 p-4">
+          {/* QA-found: nav must wrap at 360px (was overflowing 19px). The
+              stale "P0 skeleton" badge is removed (factually wrong post-P0). */}
+          <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-1 p-4">
             <span className="font-semibold">RelayBoard</span>
-            <span className="rounded bg-zinc-100 px-2 py-0.5 font-mono text-xs text-zinc-700">
-              P0 skeleton
-            </span>
             <span className="flex-1" />
             <Link
               href="/submit"

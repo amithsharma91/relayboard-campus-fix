@@ -6,6 +6,7 @@ import {
   confirmNote,
   loadPersistedPrefs,
   resolveAppConfig,
+  seedHref,
   t,
   type Lang,
   type PersistedPrefs,
@@ -30,6 +31,7 @@ import {
 } from "../../../lib/schema";
 import {
   attachReportToIncident,
+  ensureSeeded,
   getIncident,
   getItem,
   listEvents,
@@ -147,9 +149,11 @@ function saveDismissed(seedId: string, pair: string): void {
 function IncidentBanner({
   itemId,
   incidentId,
+  seedId,
 }: {
   itemId: string;
   incidentId: string | null;
+  seedId: string;
 }) {
   const [target, setTarget] = useState<string | null>(null);
   useEffect(() => {
@@ -171,7 +175,7 @@ function IncidentBanner({
     <p className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900">
       Part of incident{" "}
       <Link
-        href={`/request/${target}`}
+        href={seedHref(`/request/${target}`, seedId)}
         className="font-mono underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         {target}
@@ -256,6 +260,9 @@ function IncidentView({ id }: { id: string }) {
       sid = resolveAppConfig(q, stored).seedId;
       setSeedId(sid);
       setActiveSeedId(sid);
+      // Challenge-1 acceptance: deep links must seed the pack namespace so
+      // incident detail resolves without a prior board visit.
+      ensureSeeded();
     } catch {
       // Defaults stand.
     }
@@ -331,7 +338,7 @@ function IncidentView({ id }: { id: string }) {
           No incident exists with ID {id}.
         </p>
         <Link
-          href="/board"
+          href={seedHref("/board", seedId)}
           className="inline-block min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm leading-[28px] text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
         >
           Back to Board
@@ -461,7 +468,7 @@ function IncidentView({ id }: { id: string }) {
         <p role="status" className="rounded-lg border border-zinc-300 bg-zinc-100 p-3 text-sm">
           Merged into{" "}
           <Link
-            href={`/request/${incident.mergedIntoId}`}
+            href={seedHref(`/request/${incident.mergedIntoId}`, seedId)}
             className="font-mono underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
           >
             {incident.mergedIntoId}
@@ -485,7 +492,7 @@ function IncidentView({ id }: { id: string }) {
               >
                 <span className="min-w-0 flex-1 break-words">
                   <Link
-                    href={`/request/${m.id}`}
+                    href={seedHref(`/request/${m.id}`, seedId)}
                     className="font-mono underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
                   >
                     {m.id}
@@ -530,7 +537,7 @@ function IncidentView({ id }: { id: string }) {
                   </span>
                   <span className="flex shrink-0 gap-2">
                     <Link
-                      href={`/request/${c.reportId}`}
+                      href={seedHref(`/request/${c.reportId}`, seedId)}
                       className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
                     >
                       View
@@ -875,7 +882,7 @@ function IncidentView({ id }: { id: string }) {
       </div>
 
       <Link
-        href="/board"
+        href={seedHref("/board", seedId)}
         className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 text-sm leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         Back to Board
@@ -907,6 +914,8 @@ export default function DetailClient({ id }: { id: string }) {
   // the hard-link panel ("Linked duplicate") always stays.
   const simple = resolveAppConfig(query, prefs).simpleMode;
   const confirm = resolveAppConfig(query, prefs).confirm;
+  // Challenge-1 acceptance: link namespace for Back-to-Board + report links.
+  const seedId = resolveAppConfig(query, prefs).seedId;
 
   useEffect(() => {
     setMounted(true);
@@ -924,6 +933,9 @@ export default function DetailClient({ id }: { id: string }) {
       setPrefs(stored);
       setRole(resolveAppConfig(q, stored).role);
       setActiveSeedId(resolveAppConfig(q, stored).seedId);
+      // Challenge-1 acceptance: deep links must seed the pack namespace so
+      // incident/report detail resolves without a prior board visit.
+      ensureSeeded();
     } catch {
       // URL/storage unreadable: defaults stand.
     }
@@ -1012,7 +1024,7 @@ export default function DetailClient({ id }: { id: string }) {
           No report exists with ID {id}.
         </p>
         <Link
-          href="/board"
+          href={seedHref("/board", seedId)}
           className="inline-block min-h-[44px] rounded bg-zinc-900 px-3 py-2 text-sm leading-[28px] text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
         >
           Back to Board
@@ -1121,7 +1133,7 @@ export default function DetailClient({ id }: { id: string }) {
         </p>
       </div>
 
-      <IncidentBanner itemId={item.id} incidentId={item.incidentId ?? null} />
+      <IncidentBanner itemId={item.id} incidentId={item.incidentId ?? null} seedId={seedId} />
 
       {needsHuman(item) && (
         <p
@@ -1175,7 +1187,7 @@ export default function DetailClient({ id }: { id: string }) {
             <p className="mt-1 text-sm">
               Possible duplicate of{" "}
               <Link
-                href={`/request/${dupTargetItem.id}`}
+                href={seedHref(`/request/${dupTargetItem.id}`, seedId)}
                 className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
               >
                 {dupTargetItem.id} — {dupTargetItem.title}
@@ -1224,7 +1236,7 @@ export default function DetailClient({ id }: { id: string }) {
                     </span>
                     <span className="flex shrink-0 gap-2">
                       <Link
-                        href={`/request/${s.id}`}
+                        href={seedHref(`/request/${s.id}`, seedId)}
                         className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
                       >
                         View
@@ -1425,7 +1437,7 @@ export default function DetailClient({ id }: { id: string }) {
       </div>
 
       <Link
-        href="/board"
+        href={seedHref("/board", seedId)}
         className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 text-sm leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         Back to Board

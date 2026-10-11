@@ -12,6 +12,7 @@ import {
   loadPersistedPrefs,
   resolveAppConfig,
   savePersistedPrefs,
+  seedHref,
   t,
   type Lang,
   type PersistedPrefs,
@@ -79,7 +80,7 @@ interface CardData {
   pending: { incidentId: string; score: number } | null;
 }
 
-function IncidentCard({ card }: { card: CardData }) {
+function IncidentCard({ card, seedId }: { card: CardData; seedId: string }) {
   const { incident, members, maxScore, uncertain, explanation, pending } = card;
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4">
@@ -119,7 +120,7 @@ function IncidentCard({ card }: { card: CardData }) {
         </span>
       </div>
       <Link
-        href={`/request/${incident.id}`}
+        href={seedHref(`/request/${incident.id}`, seedId)}
         className="mt-2 block min-h-[44px] break-words font-medium underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         {incident.title}
@@ -438,7 +439,7 @@ function BoardInner() {
         ) : (
           <ul className="space-y-3">
             {visible.map((card) => (
-              <IncidentCard key={card.incident.id} card={card} />
+              <IncidentCard key={card.incident.id} card={card} seedId={cfg.seedId} />
             ))}
           </ul>
         )}

@@ -6,6 +6,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import {
   loadPersistedPrefs,
   resolveAppConfig,
+  seedHref,
   t,
   type Lang,
 } from "../../lib/config";
@@ -34,9 +35,11 @@ function SubmitInner() {
     [params],
   );
   const [lang, setLang] = useState<Lang>("en");
+  const [seedId, setSeedId] = useState("campus-maint-v1");
   useEffect(() => {
     const cfg = resolveAppConfig(query, loadPersistedPrefs());
     setLang(cfg.lang);
+    setSeedId(cfg.seedId);
     // New reports land in the active ?seed= namespace (board-driven default).
     setActiveSeedId(cfg.seedId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -197,7 +200,7 @@ function SubmitInner() {
             {submitting ? "Submitting…" : t("submitButton", lang)}
           </button>
           <Link
-            href="/board"
+            href={seedHref("/board", seedId)}
             className="inline-block min-h-[44px] rounded border border-zinc-200 px-3 py-2 text-sm leading-[28px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
           >
             View on Board
@@ -214,7 +217,7 @@ function SubmitInner() {
               Report {createdId} submitted as open.{" "}
               {resultNote !== null && <span>{resultNote} </span>}
               <Link
-                href={`/request/${createdId}`}
+                href={seedHref(`/request/${createdId}`, seedId)}
                 className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
               >
                 View report
@@ -223,7 +226,7 @@ function SubmitInner() {
                 <>
                   {" "}·{" "}
                   <Link
-                    href={`/request/${incidentId}`}
+                    href={seedHref(`/request/${incidentId}`, seedId)}
                     className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
                   >
                     View incident {incidentId}
@@ -232,7 +235,7 @@ function SubmitInner() {
               )}{" "}
               ·{" "}
               <Link
-                href="/board"
+                href={seedHref("/board", seedId)}
                 className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
               >
                 View on Board

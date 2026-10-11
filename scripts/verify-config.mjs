@@ -60,6 +60,7 @@ const {
   resolveAppConfig,
   loadPersistedPrefs,
   confirmNote,
+  seedHref,
   t,
 } = config;
 
@@ -312,6 +313,22 @@ check(
   typeof dict.en.confirmAgain === "string" &&
     typeof dict.hi.confirmAgain === "string",
   "confirmAgain covered in en + hi",
+);
+// Challenge-1 acceptance: links keep the active seed namespace so detail
+// pages resolve in the same pack; default pack keeps clean URLs.
+check(
+  seedHref("/request/INC-2101", "campus-maint-v1") === "/request/INC-2101",
+  "seedHref omits param for default pack",
+);
+check(
+  seedHref("/request/INC-2101", "challenge-wifi-1") ===
+    "/request/INC-2101?seed=challenge-wifi-1",
+  "seedHref appends ?seed= for challenge pack",
+);
+check(
+  seedHref("/board?demo=1", "challenge-wifi-1") ===
+    "/board?demo=1&seed=challenge-wifi-1",
+  "seedHref appends &seed= when query present",
 );
 
 console.log(`\n${passes} passed, ${failures} failed`);
