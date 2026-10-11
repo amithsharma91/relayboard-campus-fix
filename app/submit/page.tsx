@@ -10,7 +10,7 @@ import {
   type Lang,
 } from "../../lib/config";
 import { CATEGORIES } from "../../lib/schema";
-import { createItem, setActiveSeedId } from "../../lib/store";
+import { setActiveSeedId, submitReportWithClustering } from "../../lib/store";
 
 // Plain-text invariant: title/description/location are stored VERBATIM (no
 // server HTML-strip on this client path). Rendering relies on React
@@ -48,12 +48,16 @@ function SubmitInner() {
   const [reporter, setReporter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
+  const [incidentId, setIncidentId] = useState<string | null>(null);
+  const [resultNote, setResultNote] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setCreatedId(null);
+    setIncidentId(null);
+    setResultNote(null);
     const t = title.trim();
     const l = location.trim();
     const d = description.trim();
@@ -70,7 +74,11 @@ function SubmitInner() {
       return;
     }
     setSubmitting(true);
-    const res = createItem({
+    // Challenge-1 submit flow: createItem -> similarity match -> auto-attach
+    // ONLY when the store confirms (message never claims an unconfirmed
+    // attachment) -> else a new incident (or "awaiting review" when the
+    // placement is uncertain).
+    const res = submitReportWithClustering({
       title: t,
       description: d,
       location: l,
@@ -83,6 +91,8 @@ function SubmitInner() {
       return;
     }
     setCreatedId(res.item.id);
+    setIncidentId(res.incident.id.startsWith("INC-") ? res.incident.id : null);
+    setResultNote(res.message);
     setTitle("");
     setLocation("");
     setCategory("");
@@ -202,12 +212,24 @@ function SubmitInner() {
           {createdId !== null && (
             <p role="status" className="rounded bg-green-50 p-2 text-sm text-green-900">
               Report {createdId} submitted as open.{" "}
+              {resultNote !== null && <span>{resultNote} </span>}
               <Link
                 href={`/request/${createdId}`}
                 className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
               >
                 View report
-              </Link>{" "}
+              </Link>
+              {incidentId !== null && (
+                <>
+                  {" "}·{" "}
+                  <Link
+                    href={`/request/${incidentId}`}
+                    className="underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+                  >
+                    View incident {incidentId}
+                  </Link>
+                </>
+              )}{" "}
               ·{" "}
               <Link
                 href="/board"

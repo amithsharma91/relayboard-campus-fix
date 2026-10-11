@@ -74,3 +74,94 @@ Optional only after P5 green: photo preview polish, hi key fill, transcript-past
 ## 6. Aggressive cuts + risks
 
 Cut: drag-drop, rich-text, charts, modals lib, toasts lib, pagination lib, photo pipeline, vector, realtime, auth, payments. If behind at any gate: cut photo input first, then hi keys, then search box (keep status filter). Top risks: LLM latency (8s abort), dup false-positives (threshold+human override), P0 mis-triage (keyword force-upgrade + mandatory gate), quota storage (in-memory fallback), scope creep (freeze rule: new table/status/role/service needs replaced-thing + fail-proof + <45 min).
+
+## 7. Challenge-1 incident-relationship note (decisions + what replaces what)
+
+> Lead-authorized append (Challenge Card 1). Stored incident model — the
+> freeze rule is met as: (a) it replaces nothing working — report queue,
+> transitions, CSV, and `suggestDuplicates` are byte-behavior-identical
+> (all six suites green, assertions not lowered); (b) demo fails without it
+> — noisy duplicates, merge, reclassify, and verification have no place to
+> persist (derived views cannot hold them); (c) additive-only schema/store
+> plus new files, no dependency installs.
+
+- **Model (additive, `lib/schema.ts`):** `Department` (+`isDepartment`,
+  `departmentForCategory`: wifi→network_ops, classroom_equip→
+  classroom_support, electrical→safety on P0 else facilities,
+  water/facility→facilities, other→triage); `MasterIncident` (INC-\<n\>,
+  canonical fields, `attachedReportIds` non-empty, `mergedIntoId` alias,
+  `verification {unverified|confirmed_fixed|still_broken}`) reusing the
+  Status union (no new member; Assigned is display-only for approved);
+  `IncidentEvent` (old-6 + incident_created|report_attached|
+  incident_merged|reclassified|reassigned|verified); `Item.incidentId?`
+  optional (old records still validate); `INCIDENT_TRANSITIONS` = item
+  matrix + exactly one edge (resolved→in_progress reopen, incident-level
+  ONLY — Item matrix frozen, reports terminal at resolved).
+- **Matching (`lib/clustering.ts`, new):** pure/deterministic/bounded
+  (MAX_TOKENS 64, SCAN_CAP 200, limit 3), similarity-only. Synonym
+  append-tags (zznet/zzproj/zzdown/zzdegraded), building alias table,
+  LocationTier EXACT/SAME_BUILDING/MISSING/CONFLICT, category
+  SAME/WILDCARD/CONFLICT; auto ≥0.80, review 0.50–0.79 (+ MISSING ≥0.65 &
+  strong≥2, CONFLICT ≥0.85 & strong≥2, cat-conflict capped review +
+  reclassify flag), else separate. Evidence per candidate
+  (band/reasons≤4/sharedTokens≤8/tier/categoryNote); tie-break
+  score↓createdAt↑id↓. STOPWORDS extends the duplicates list;
+  generic-only→0. Matches reports against canonical incidents via member
+  token union. `lib/duplicates.ts` untouched (regression-tested).
+- **Store (`lib/store.ts`, additive):** NEW keys
+  `relayboard:{seed}:incidents` / `:incident_events` (+ additive
+  `queueKeys` fields; canonical three values unchanged) and separate
+  `meta.incidentSeq` (RPT sequencing untouched). Lazy: derive in memory
+  via pure `deriveIncidents()` (duplicateOfId roots, 50-hop walk, survivor
+  oldest/ smallest-id, status max-progress, INC-\<survivor suffix\>) when
+  the key is absent; persist on first incident mutation; unpersisted
+  singletons collapse as "ungrouped" placeholders (never silently replace
+  persisted groupings). Derived canonical incidents start with EMPTY
+  events. Ops (all validate-first, zero side effects on failure):
+  `submitReportWithClustering` (createItem unchanged → match →
+  auto-attach-only-on-auto with similarity message → else new incident;
+  "awaiting review" when confidence<0.6 or location missing; never claims
+  unconfirmed attachments), `attachReportToIncident` (coordinator,
+  no-dup-attach), `mergeIncidents` (coordinator+reason, canonical/distinct,
+  50-hop both-direction cycle walk, deduped union, source→duplicate+alias,
+  `resolveIncident` 50-hop), `reclassifyIncident`/`reassignIncident`
+  (coordinator+reason, events old→new, items never mutated),
+  `transitionIncident` (role parity: coordinator all; assignee
+  approved↔in_progress↔resolved+verify; student verify/reopen ONLY via one
+  documented if-statement), `verifyIncident` (fixed→confirmed_fixed;
+  broken→still_broken+reopen, department kept; one
+  `relayboard:{seed}:verify:{incidentId}` vote key, latest wins display,
+  every vote an event; resolved-only).
+- **Surfaces:** board = one card per canonical incident (dept+status,
+  ×N, uncertainty + candidate flags, 1-line explanation, search across
+  member texts, Active-default filter, max-score/newest sort, "N incidents
+  (M reports)"); detail = incident header + attached reports
+  (original-vs-corrected, /request/RPT-xx links intact) + candidate
+  Attach/Dismiss + merge picker + reclassify/department + stepper +
+  Fixed/Still-broken + deterministic timeline; submit = three-way
+  messaging with real links. CSV FROZEN (report rows, 10 columns).
+- **Demo pack (new files only):** `lib/seed-challenge-wifi-1.json` +
+  registry entries (`lib/store.ts` + `lib/config.ts`), id
+  `challenge-wifi-1`; canonical seed/hash untouched. 9 reports / 6
+  incidents incl. resolved+verified INC-2106 whose 2 events are
+  synthetic-labeled (actor coordinator; no real-person claims).
+- **Verification:** `scripts/verify-incidents.mjs` (124 checks after lead
+  T13 hardening: 501-char note/reason caps, create gate, limit cap,
+  truncation bound, genuine demo scores CHW-05 0.57 / laundry 0.15 /
+  printer 0.27 / guided auto-attach; existing tsc-to-tmpdir pattern);
+  `npx tsc --noEmit` clean; six suites green (seeds a21ee8d7, scorer 90,
+  workflow 68 = HEAD baseline, csv 21, config 73, duplicates 49).
+  NOT done here: `npm run build` (lead gate), servers, browser proof
+  (see DEMO_PLAN §7.4).
+- **Lead review resolutions (Challenge 1 gate):** matcher tier-gates
+  enforced before category cap (MISSING/CONFLICT pairs need ≥0.65/≥0.85 +
+  strong≥2 even when categories differ); WEAK tokens excluded from the
+  strong gate (tag mapping kept for recall — documented deviation);
+  down/no-signal restored as zzdown tags only (hallway-guarded);
+  tie-break id ASC; limit hard cap 10; tokenizer truncation bound.
+  Intentional narrowings (documented, not defects): uncertainty indicator
+  is confidence-driven only; pending-candidate scan covers single-member
+  incidents; merged sources keep a banner+link page (no auto-redirect);
+  auto-attach audit actor is coordinator-by-authority (see DEMO §7.4 note).
+  Deferred: subunit parsing (no band impact), expectedCategory evidence
+  field, locationLabel non-empty guard, quota banner, full hi coverage.

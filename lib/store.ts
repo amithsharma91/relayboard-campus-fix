@@ -10,20 +10,36 @@
 // running reseedDemo() twice yields byte-identical storage with no dupes.
 
 import seedData from "./seed.json";
+import challengePackData from "./seed-challenge-wifi-1.json";
 import {
   canTransition,
+  departmentForCategory,
   isCategory,
+  isDepartment,
   isRole,
   validateEvent,
+  validateIncident,
+  validateIncidentEvent,
   validateItem,
+  canTransitionIncident,
+  type Department,
   type Event,
+  type IncidentEvent,
   type Item,
+  type MasterIncident,
   type Role,
   type Status,
 } from "./schema";
 import { classify, contentHashFor } from "./fallbacks";
+import {
+  matchReportToIncidents,
+  type MatchBand,
+  type MatchCandidate,
+} from "./clustering";
 
 export const SEED_ID = "campus-maint-v1";
+// Challenge-1 demo pack namespace (isolated storage, ?seed= activation).
+export const CHALLENGE_SEED_ID = "challenge-wifi-1";
 
 export interface SeedMeta {
   seedId: string;
@@ -31,20 +47,53 @@ export interface SeedMeta {
   // P3 workflow counter: number of IDs issued past RPT-1010. Optional so
   // pre-P3 stored meta ({seedId, hash}) still parses; missing means 0.
   seq?: number;
+  // Challenge-1 incident counter: number of INC ids issued past INC-1100.
+  // Separate from seq so report sequencing (RPT-1011+, verified by
+  // scripts/verify-workflow.mjs) is never disturbed. Missing means 0.
+  incidentSeq?: number;
 }
 
+// F hardening: user-controlled note/reason strings are type-checked AND
+// length-capped so unbounded text can't bloat localStorage or the timeline.
+export const MAX_NOTE_CHARS = 500;
+export function invalidNoteText(u: unknown): string | null {
+  if (u === undefined) return null;
+  if (typeof u !== "string") return "Note must be a string.";
+  if (u.length > MAX_NOTE_CHARS) {
+    return `Note must be at most ${MAX_NOTE_CHARS} characters.`;
+  }
+  return null;
+}
+export function invalidReasonText(reason: unknown, action: string): string | null {
+  if (typeof reason !== "string" || reason.trim().length === 0) {
+    return `A reason is required to ${action}.`;
+  }
+  if (reason.length > MAX_NOTE_CHARS) {
+    return `Reason must be at most ${MAX_NOTE_CHARS} characters.`;
+  }
+  return null;
+}
 // In-memory mirror: used on the server (no window) and when localStorage
 // throws or is unavailable. Never seeded with random/time values.
 let memoryItems: Item[] | null = null;
 let memoryEvents: Event[] = [];
 let memoryMeta: SeedMeta | null = null;
+// Challenge-1 mirrors: null = not yet persisted this session (lazy
+// derive/pack-fixture path); non-null = persisted snapshot.
+let memoryIncidents: MasterIncident[] | null = null;
+let memoryIncidentEvents: IncidentEvent[] = [];
 
 // AD-5 seed namespaces: ?seed=<id> isolates storage per pack. Only
-// registered pack ids are selectable; today the registry holds the single
-// canonical pack. Authoring a new pack (<60min path): add its items/events
-// providers beside canonicalSeedItems/canonicalSeedEvents, append its id to
-// REGISTERED_SEED_IDS, and extend packItems()/packEvents() to serve it.
-export const REGISTERED_SEED_IDS: readonly string[] = [SEED_ID];
+// registered pack ids are selectable; today the registry holds the canonical
+// pack plus the Challenge-1 demo pack. Authoring a new pack (<60min path):
+// add its items/events providers beside canonicalSeedItems/canonicalSeedEvents,
+// append its id to REGISTERED_SEED_IDS, and extend packItems()/packEvents()
+// (+ packIncidents()/packIncidentEvents() when the pack ships explicit
+// incident fixtures) to serve it.
+export const REGISTERED_SEED_IDS: readonly string[] = [
+  SEED_ID,
+  CHALLENGE_SEED_ID,
+];
 
 let activeSeedId: string = SEED_ID;
 
@@ -64,35 +113,99 @@ export function setActiveSeedId(id: unknown): boolean {
     memoryItems = null;
     memoryEvents = [];
     memoryMeta = null;
+    memoryIncidents = null;
+    memoryIncidentEvents = [];
   }
   return true;
 }
 
 // Pure key derivation (exported for tests): per-pack namespaces can never
-// collide with each other or with the prefs key.
+// collide with each other or with the prefs key. Challenge-1 ADDS the
+// incidents/incidentEvents keys; items/events/meta values are unchanged
+// (scripts/verify-workflow.mjs asserts the canonical three exactly).
 export function queueKeys(seedId: string): {
   items: string;
   events: string;
   meta: string;
+  incidents: string;
+  incidentEvents: string;
 } {
   return {
     items: `relayboard:${seedId}:items`,
     events: `relayboard:${seedId}:events`,
     meta: `relayboard:${seedId}:meta`,
+    incidents: `relayboard:${seedId}:incidents`,
+    incidentEvents: `relayboard:${seedId}:incident_events`,
   };
 }
 
-// Pack content for the active namespace. Only the canonical pack is
-// registered today, so any other active id yields empty lists (never
-// foreign content under a new id).
+// One vote per browser namespace for verification display (latest wins;
+// every vote still appends an audit event). Exported for UI + tests.
+export function verifyVoteKey(seedId: string, incidentId: string): string {
+  return `relayboard:${seedId}:verify:${incidentId}`;
+}
+
+// Pack content for the active namespace. Only registered packs serve
+// content; any other active id yields empty lists (never foreign content
+// under a new id).
 function packItems(): Item[] {
+  if (activeSeedId === CHALLENGE_SEED_ID) return challengeSeedItems();
   if (activeSeedId !== SEED_ID) return [];
   return canonicalSeedItems();
 }
 
 function packEvents(): Event[] {
+  if (activeSeedId === CHALLENGE_SEED_ID) return challengeSeedEvents();
   if (activeSeedId !== SEED_ID) return [];
   return canonicalSeedEvents();
+}
+
+// Challenge-1 pack items/events/incidents: explicit fixtures from
+// lib/seed-challenge-wifi-1.json (fresh deep copies so callers can never
+// mutate the imported payload). Items carry incidentId backfills matching
+// the explicit incidents below, so the pack board is stable on first paint.
+export function challengeSeedItems(): Item[] {
+  const raw = JSON.parse(
+    JSON.stringify(
+      (challengePackData as unknown as { items: unknown }).items,
+    ),
+  ) as unknown[];
+  return raw.filter(validateItem);
+}
+
+function challengeSeedEvents(): Event[] {
+  const raw = JSON.parse(
+    JSON.stringify(
+      (challengePackData as unknown as { events: unknown }).events,
+    ),
+  ) as unknown[];
+  return raw.filter(validateEvent);
+}
+
+// Explicit incident fixtures for the demo pack ONLY (resolved+verified
+// INC-2106 needs synthetic history that lazy derivation never fabricates —
+// those events are labeled "synthetic demo fixture" and the DEMO guide says
+// so). The canonical namespace NEVER serves fixtures here: it always
+// derives via deriveIncidents() with EMPTY incident events.
+function packIncidents(): MasterIncident[] {
+  if (activeSeedId !== CHALLENGE_SEED_ID) return [];
+  const raw = JSON.parse(
+    JSON.stringify(
+      (challengePackData as unknown as { incidents: unknown }).incidents,
+    ),
+  ) as unknown[];
+  return raw.filter(validateIncident);
+}
+
+function packIncidentEvents(): IncidentEvent[] {
+  if (activeSeedId !== CHALLENGE_SEED_ID) return [];
+  const raw = JSON.parse(
+    JSON.stringify(
+      (challengePackData as unknown as { incidentEvents: unknown })
+        .incidentEvents,
+    ),
+  ) as unknown[];
+  return raw.filter(validateIncidentEvent);
 }
 
 function isBrowser(): boolean {
@@ -256,10 +369,23 @@ export function ensureSeeded(): Item[] {
 }
 
 // Overwrite the store with canonical seeds. Idempotent: byte-identical
-// storage on repeat runs, no duplicates. Used by `?demo=1`.
+// storage on repeat runs, no duplicates. Used by `?demo=1`. Challenge-1:
+// also resets the incident layer (in-memory mirrors + stored incident keys)
+// so the next listIncidents() lazily re-derives (canonical) or re-serves
+// pack fixtures (challenge). Report-level behavior is unchanged.
 export function reseedDemo(): Item[] {
   const items = packItems();
   persistAll(items, packEvents(), buildMeta());
+  memoryIncidents = null;
+  memoryIncidentEvents = [];
+  if (isBrowser()) {
+    try {
+      window.localStorage.removeItem(queueKeys(activeSeedId).incidents);
+      window.localStorage.removeItem(queueKeys(activeSeedId).incidentEvents);
+    } catch {
+      // Storage unavailable: mirrors above already reset.
+    }
+  }
   return items;
 }
 
@@ -386,17 +512,19 @@ function readP3Meta(): SeedMeta {
     seedId: activeSeedId,
     hash: activeSeedId === SEED_ID ? canonicalSeedHash() : "no-pack",
     seq: 0,
+    incidentSeq: 0,
   };
+  const normalizeSeq = (s: unknown): number =>
+    typeof s === "number" && Number.isInteger(s) && s >= 0 ? s : 0;
   try {
     if (!isBrowser()) {
       if (memoryMeta !== null && memoryMeta.seedId === activeSeedId) {
-        const s = memoryMeta.seq;
         return {
           ...fallback,
           ...memoryMeta,
           hash: fallback.hash,
-          seq:
-            typeof s === "number" && Number.isInteger(s) && s >= 0 ? s : 0,
+          seq: normalizeSeq(memoryMeta.seq),
+          incidentSeq: normalizeSeq(memoryMeta.incidentSeq),
         };
       }
       return fallback;
@@ -404,24 +532,23 @@ function readP3Meta(): SeedMeta {
     const raw = readKey(queueKeys(activeSeedId).meta);
     if (raw === null) {
       if (memoryMeta !== null && memoryMeta.seedId === activeSeedId) {
-        const s = memoryMeta.seq;
         return {
           ...fallback,
           ...memoryMeta,
           hash: fallback.hash,
-          seq:
-            typeof s === "number" && Number.isInteger(s) && s >= 0 ? s : 0,
+          seq: normalizeSeq(memoryMeta.seq),
+          incidentSeq: normalizeSeq(memoryMeta.incidentSeq),
         };
       }
       return fallback;
     }
     const m = JSON.parse(raw) as Partial<SeedMeta>;
     if (m.seedId !== activeSeedId) return fallback;
-    const s = m.seq;
     return {
       seedId: activeSeedId,
       hash: fallback.hash,
-      seq: typeof s === "number" && Number.isInteger(s) && s >= 0 ? s : 0,
+      seq: normalizeSeq(m.seq),
+      incidentSeq: normalizeSeq(m.incidentSeq),
     };
   } catch {
     return fallback;
@@ -608,8 +735,9 @@ export function transitionItem(
     if (!validStatuses.includes(to)) {
       return { ok: false, error: `Invalid status '${String(to)}'.` };
     }
-    if (note !== undefined && typeof note !== "string") {
-      return { ok: false, error: "Note must be a string." };
+    const noteErr = invalidNoteText(note);
+    if (noteErr !== null) {
+      return { ok: false, error: noteErr };
     }
     const items = listItems();
     const found = items.find((i) => i.id === id) ?? null;
@@ -757,4 +885,1065 @@ export function transitionItem(
       error: e instanceof Error ? e.message : "Storage failure.",
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Challenge-1 incident layer (append-only addition; every P1–P4 function
+// above is behavior-identical).
+//
+// Lazy migration: listIncidents() derives from items in memory while the
+// :incidents key is absent and persists to the NEW incidents/incident_events
+// keys on the first incident mutation. Report items/events payloads are
+// never rewritten except the additive incidentId backfill on attach/move.
+// Derived canonical incidents start with EMPTY incident events (no
+// fabricated history); the UI shows attached reports (which carry their own
+// P3 history) plus a "history starts with your first action" empty state.
+// ---------------------------------------------------------------------------
+
+export type IncidentResult =
+  | { ok: true; incident: MasterIncident; event: IncidentEvent }
+  | { ok: false; error: string };
+
+export type SubmitClusteringResult =
+  | {
+      ok: true;
+      item: Item;
+      incident: MasterIncident;
+      attached: boolean;
+      band: MatchBand;
+      score: number | null;
+      message: string;
+      candidates: MatchCandidate[];
+    }
+  | { ok: false; error: string };
+
+// Per-record filtering for the incident keys (same G3 pattern as
+// parseItems/parseEvents): one malformed record never wipes the layer.
+export function parseIncidents(raw: string | null): MasterIncident[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const valid = parsed.filter(validateIncident);
+    return valid.length > 0 || parsed.length === 0 ? valid : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseIncidentEvents(
+  raw: string | null,
+): IncidentEvent[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const valid = parsed.filter(validateIncidentEvent);
+    return valid.length > 0 || parsed.length === 0 ? valid : null;
+  } catch {
+    return null;
+  }
+}
+
+// Progress rank for migration status: the canonical incident takes the
+// furthest-progressed member status. Terminal report states (rejected,
+// duplicate) rank below open so one closed report never drags a live
+// cluster backwards; all-rejected/all-duplicate groups keep that state.
+const MIGRATION_STATUS_RANK: Record<Status, number> = {
+  open: 0,
+  approved: 1,
+  in_progress: 2,
+  resolved: 3,
+  rejected: -1,
+  duplicate: -2,
+};
+
+// Pure migration: group items by duplicateOfId roots (bounded 50-hop walk;
+// orphans whose target is missing group under the dangling item, lone
+// items are singletons), survivor = oldest createdAt (tie: smallest id),
+// incident id INC-<survivor numeric suffix>. Canonical fields come from the
+// survivor; department is derived; status is max member progress;
+// attachedReportIds are survivor-first. No events are fabricated here.
+export function deriveIncidents(items: Item[]): MasterIncident[] {
+  if (!Array.isArray(items)) return [];
+  const valid = items.filter(validateItem);
+  const byId = new Map<string, Item>(valid.map((i) => [i.id, i]));
+
+  function rootOf(startId: string): string {
+    let cur = startId;
+    const seen = new Set<string>([startId]);
+    for (let hop = 0; hop < 50; hop++) {
+      const it = byId.get(cur);
+      if (it === undefined || it.duplicateOfId === null) return cur;
+      const nxt = it.duplicateOfId;
+      if (nxt === cur || seen.has(nxt)) return cur;
+      if (!byId.has(nxt)) return cur;
+      seen.add(nxt);
+      cur = nxt;
+    }
+    return cur;
+  }
+
+  const groups = new Map<string, Item[]>();
+  for (const it of valid) {
+    const root = rootOf(it.id);
+    const list = groups.get(root);
+    if (list === undefined) groups.set(root, [it]);
+    else list.push(it);
+  }
+
+  const out: MasterIncident[] = [];
+  groups.forEach((members) => {
+    const sorted = [...members].sort((a, b) => {
+      const ta = Date.parse(a.createdAt);
+      const tb = Date.parse(b.createdAt);
+      if (ta !== tb) return ta - tb;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    const survivor = sorted[0];
+    const suffixMatch = /(\d+)$/.exec(survivor.id);
+    const suffix = suffixMatch !== null ? suffixMatch[1] : "0";
+    let status: Status = survivor.status;
+    let best = MIGRATION_STATUS_RANK[survivor.status] ?? 0;
+    for (const m of sorted) {
+      const r = MIGRATION_STATUS_RANK[m.status] ?? 0;
+      if (r > best) {
+        best = r;
+        status = m.status;
+      }
+    }
+    let updatedAt = survivor.updatedAt;
+    for (const m of sorted) {
+      if (Date.parse(m.updatedAt) > Date.parse(updatedAt)) {
+        updatedAt = m.updatedAt;
+      }
+    }
+    const incident: MasterIncident = {
+      id: `INC-${suffix}`,
+      title: survivor.title,
+      category: survivor.category,
+      severity: survivor.severity,
+      locationLabel: survivor.location,
+      department: departmentForCategory(survivor.category, survivor.severity),
+      status,
+      attachedReportIds: sorted.map((m) => m.id),
+      mergedIntoId: null,
+      createdFrom: survivor.id,
+      createdAt: survivor.createdAt,
+      updatedAt,
+      verification: { state: "unverified", by: null, at: null },
+    };
+    if (validateIncident(incident)) out.push(incident);
+  });
+  out.sort((a, b) => {
+    const ta = Date.parse(a.createdAt);
+    const tb = Date.parse(b.createdAt);
+    if (ta !== tb) return ta - tb;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return out;
+}
+
+// Canonical list: stored snapshot when the :incidents key exists, otherwise
+// pack fixtures (challenge pack only) or lazy derivation (canonical, never
+// persisted by a read — only incident mutations persist).
+export function listIncidents(): MasterIncident[] {
+  if (!isBrowser()) {
+    if (memoryIncidents !== null) return memoryIncidents;
+    if (activeSeedId === CHALLENGE_SEED_ID) return packIncidents();
+    return deriveIncidents(memoryItems ?? packItems());
+  }
+  const stored = parseIncidents(readKey(queueKeys(activeSeedId).incidents));
+  if (stored !== null) {
+    memoryIncidents = stored;
+    return stored;
+  }
+  if (activeSeedId === CHALLENGE_SEED_ID) return packIncidents();
+  return deriveIncidents(listItems());
+}
+
+export function listIncidentEvents(): IncidentEvent[] {
+  if (!isBrowser()) {
+    // Persisted this session (mutations set memoryIncidents) -> snapshot;
+    // otherwise pack fixtures (challenge) or EMPTY (canonical derivation
+    // fabricates no history).
+    if (memoryIncidents !== null) return memoryIncidentEvents;
+    if (activeSeedId === CHALLENGE_SEED_ID) return packIncidentEvents();
+    return [];
+  }
+  const hasStored =
+    parseIncidents(readKey(queueKeys(activeSeedId).incidents)) !== null;
+  if (hasStored) {
+    const stored = parseIncidentEvents(
+      readKey(queueKeys(activeSeedId).incidentEvents),
+    );
+    if (stored !== null) {
+      memoryIncidentEvents = stored;
+      return stored;
+    }
+    return memoryIncidentEvents;
+  }
+  if (activeSeedId === CHALLENGE_SEED_ID) return packIncidentEvents();
+  return [];
+}
+
+export function getIncident(id: string): MasterIncident | null {
+  const found = listIncidents().find((i) => i.id === id);
+  return found ?? null;
+}
+
+// Follow merge aliases deterministically (50-hop cap). Returns the canonical
+// incident, or null when unknown / dangling / cyclic.
+export function resolveIncident(id: string): MasterIncident | null {
+  if (typeof id !== "string" || id.length === 0) return null;
+  const incidents = listIncidents();
+  const byId = new Map(incidents.map((i) => [i.id, i]));
+  let cur: MasterIncident | null = byId.get(id) ?? null;
+  for (let hop = 0; hop < 50; hop++) {
+    if (cur === null) return null;
+    if (cur.mergedIntoId === null) return cur;
+    cur = byId.get(cur.mergedIntoId) ?? null;
+  }
+  return null;
+}
+
+function persistIncidentState(opts: {
+  incidents: MasterIncident[];
+  events: IncidentEvent[];
+  meta: SeedMeta;
+  items?: Item[];
+}): void {
+  const k = queueKeys(activeSeedId);
+  writeKey(k.incidents, JSON.stringify(opts.incidents));
+  writeKey(k.incidentEvents, JSON.stringify(opts.events));
+  writeKey(k.meta, JSON.stringify(opts.meta));
+  memoryIncidents = JSON.parse(JSON.stringify(opts.incidents)) as MasterIncident[];
+  memoryIncidentEvents = JSON.parse(
+    JSON.stringify(opts.events),
+  ) as IncidentEvent[];
+  memoryMeta = JSON.parse(JSON.stringify(opts.meta)) as SeedMeta;
+  if (opts.items !== undefined) {
+    writeKey(k.items, JSON.stringify(opts.items));
+    memoryItems = JSON.parse(JSON.stringify(opts.items)) as Item[];
+  }
+}
+
+function nextIncidentId(
+  incidents: MasterIncident[],
+  seq: number,
+): { id: string; nextSeq: number } {
+  const ids = new Set(incidents.map((i) => i.id));
+  let s = seq;
+  while (ids.has(`INC-${1100 + s}`)) s++;
+  return { id: `INC-${1100 + s}`, nextSeq: s + 1 };
+}
+
+// True once the incident layer has been explicitly persisted (first
+// mutation). While false, listIncidents() is a live derivation where a new
+// report shows up as its own singleton placeholder — attach/create collapse
+// that placeholder instead of failing, because it represents "ungrouped",
+// not a real grouping decision. Persisted singletons are never collapsed
+// (their history must survive; moving their only member out is rejected).
+function incidentsArePersisted(): boolean {
+  if (!isBrowser()) return memoryIncidents !== null;
+  return (
+    parseIncidents(readKey(queueKeys(activeSeedId).incidents)) !== null
+  );
+}
+
+function backfillIncidentId(
+  items: Item[],
+  reportIds: readonly string[],
+  incidentId: string,
+): Item[] {
+  const set = new Set(reportIds);
+  return items.map((i) =>
+    set.has(i.id) ? { ...i, incidentId } : i,
+  );
+}
+
+export function createIncidentForReport(
+  reportId: string,
+  actor: Role,
+  note?: string,
+): IncidentResult {
+  try {
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    // F hardening: incident creation is coordinator-only, like every other
+    // incident-structure mutation. The submit flow calls with "coordinator"
+    // internally (submitReportWithClustering); direct callers must too.
+    if (actor !== "coordinator") {
+      return { ok: false, error: "Only coordinators can create incidents." };
+    }
+    const noteErr = invalidNoteText(note);
+    if (noteErr !== null) {
+      return { ok: false, error: noteErr };
+    }
+    const items = listItems();
+    const report = items.find((i) => i.id === reportId) ?? null;
+    if (report === null || !validateItem(report)) {
+      return { ok: false, error: `Unknown report '${reportId}'.` };
+    }
+    const incidents = listIncidents();
+    const holder = incidents.find((inc) =>
+      inc.attachedReportIds.includes(reportId),
+    ) ?? null;
+    if (holder !== null) {
+      // Collapse an unpersisted derivation placeholder (the report's own
+      // singleton): it stands for "ungrouped", not a decision. A persisted
+      // grouping is never silently replaced.
+      const placeholder =
+        holder.attachedReportIds.length === 1 &&
+        !incidentsArePersisted();
+      if (!placeholder) {
+        return { ok: false, error: "Report is already grouped." };
+      }
+    }
+    const working =
+      holder !== null
+        ? incidents.filter((inc) => inc.id !== holder.id)
+        : incidents;
+    const meta = readP3Meta();
+    const { id, nextSeq } = nextIncidentId(working, meta.incidentSeq ?? 0);
+    const now = new Date().toISOString();
+    const incident: MasterIncident = {
+      id,
+      title: report.title,
+      category: report.category,
+      severity: report.severity,
+      locationLabel: report.location,
+      department: departmentForCategory(report.category, report.severity),
+      status: "open",
+      attachedReportIds: [reportId],
+      mergedIntoId: null,
+      createdFrom: reportId,
+      createdAt: report.createdAt,
+      updatedAt: now,
+      verification: { state: "unverified", by: null, at: null },
+    };
+    if (!validateIncident(incident)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    const event: IncidentEvent = {
+      id: `${id}-evt-created`,
+      incidentId: id,
+      reportId,
+      actor,
+      type: "incident_created",
+      from: null,
+      to: "open",
+      at: now,
+    };
+    if (typeof note === "string" && note.length > 0) event.note = note;
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    persistIncidentState({
+      incidents: [...working, incident],
+      events: [...listIncidentEvents(), event],
+      meta: { ...meta, incidentSeq: nextSeq },
+      items: backfillIncidentId(items, [reportId], id),
+    });
+    return { ok: true, incident, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Attach (or move) a report to a canonical incident. Coordinator-only:
+// candidate review and the submit-flow auto-attach both run with coordinator
+// authority and record it in the event. Attaching an already-member report
+// to the same incident fails with zero side effects (no-dup-attach).
+export function attachReportToIncident(
+  reportId: string,
+  incidentId: string,
+  actor: Role,
+  note?: string,
+): IncidentResult {
+  try {
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    if (actor !== "coordinator") {
+      return { ok: false, error: "Only coordinators can attach reports." };
+    }
+    const noteErr = invalidNoteText(note);
+    if (noteErr !== null) {
+      return { ok: false, error: noteErr };
+    }
+    const items = listItems();
+    const report = items.find((i) => i.id === reportId) ?? null;
+    if (report === null || !validateItem(report)) {
+      return { ok: false, error: `Unknown report '${reportId}'.` };
+    }
+    const target = resolveIncident(incidentId);
+    if (target === null) {
+      return { ok: false, error: `Unknown incident '${incidentId}'.` };
+    }
+    if (target.attachedReportIds.includes(reportId)) {
+      return { ok: false, error: "Report is already attached." };
+    }
+    const incidents = listIncidents();
+    let oldIncidentId: string | null = null;
+    let collapsePlaceholder = false;
+    for (const inc of incidents) {
+      if (inc.id !== target.id && inc.attachedReportIds.includes(reportId)) {
+        oldIncidentId = inc.id;
+        // Same placeholder rule as createIncidentForReport: an unpersisted
+        // derivation singleton for this very report collapses (it is
+        // deleted as its member moves); a persisted singleton keeps its
+        // history and the move is rejected below instead.
+        collapsePlaceholder =
+          inc.attachedReportIds.length === 1 && !incidentsArePersisted();
+        break;
+      }
+    }
+    const now = new Date().toISOString();
+    let next = incidents.map((inc) => {
+      if (inc.id === target.id) {
+        return {
+          ...inc,
+          attachedReportIds: [...inc.attachedReportIds, reportId],
+          updatedAt: now,
+        };
+      }
+      if (inc.id === oldIncidentId && !collapsePlaceholder) {
+        return {
+          ...inc,
+          attachedReportIds: inc.attachedReportIds.filter(
+            (r) => r !== reportId,
+          ),
+          updatedAt: now,
+        };
+      }
+      return inc;
+    });
+    if (collapsePlaceholder && oldIncidentId !== null) {
+      next = next.filter((inc) => inc.id !== oldIncidentId);
+    }
+    // A move must never leave an incident empty (non-empty invariant):
+    // dropping the only member is rejected instead.
+    const emptied = next.find(
+      (inc) =>
+        inc.id === oldIncidentId && inc.attachedReportIds.length === 0,
+    );
+    if (emptied !== undefined) {
+      return {
+        ok: false,
+        error: "Cannot move the only report out of its incident.",
+      };
+    }
+    const event: IncidentEvent = {
+      id: `${target.id}-attach-${reportId}-${Date.now()}`,
+      incidentId: target.id,
+      reportId,
+      actor,
+      type: "report_attached",
+      from: oldIncidentId,
+      to: target.id,
+      at: now,
+    };
+    if (typeof note === "string" && note.length > 0) event.note = note;
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    const updated = next.find((inc) => inc.id === target.id);
+    if (updated === undefined || !validateIncident(updated)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    persistIncidentState({
+      incidents: next,
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+      items: backfillIncidentId(items, [reportId], target.id),
+    });
+    return { ok: true, incident: updated, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Merge source into target (coordinator + reason required). Both must exist,
+// be canonical (mergedIntoId null) and distinct; a 50-hop cycle walk runs in
+// BOTH directions. Attachments move as a deduped union; the source keeps its
+// historical member list (non-empty invariant) but resolves to the target,
+// flips to duplicate and gains mergedIntoId. Full history is kept on both
+// sides (no event is deleted); one incident_merged event is appended to the
+// target. Repeats fail with zero side effects.
+export function mergeIncidents(
+  sourceId: string,
+  targetId: string,
+  actor: Role,
+  reason: string,
+): IncidentResult {
+  try {
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    if (actor !== "coordinator") {
+      return { ok: false, error: "Only coordinators can merge." };
+    }
+    const mergeReasonErr = invalidReasonText(reason, "merge");
+    if (mergeReasonErr !== null) {
+      return { ok: false, error: mergeReasonErr };
+    }
+    const incidents = listIncidents();
+    const byId = new Map<string, MasterIncident>(
+      incidents.map((i) => [i.id, i] as [string, MasterIncident]),
+    );
+    const source = byId.get(sourceId) ?? null;
+    const target = byId.get(targetId) ?? null;
+    if (source === null) {
+      return { ok: false, error: `Unknown incident '${sourceId}'.` };
+    }
+    if (target === null) {
+      return { ok: false, error: `Unknown incident '${targetId}'.` };
+    }
+    if (sourceId === targetId) {
+      return { ok: false, error: "Cannot merge an incident into itself." };
+    }
+    if (source.mergedIntoId !== null || target.mergedIntoId !== null) {
+      return { ok: false, error: "Only canonical incidents can merge." };
+    }
+    // 50-hop cycle walk, both directions.
+    for (const [from, to] of [
+      [targetId, sourceId],
+      [sourceId, targetId],
+    ] as const) {
+      let cursor: string | null = from;
+      for (let hop = 0; hop < 50; hop++) {
+        if (cursor === null) break;
+        if (cursor === to && cursor !== from) {
+          return {
+            ok: false,
+            error: "Merging would create a cycle.",
+          };
+        }
+        const found: MasterIncident | null = byId.get(cursor) ?? null;
+        if (found === null) break;
+        cursor = found.mergedIntoId;
+      }
+      if (cursor === to && cursor !== from) {
+        return { ok: false, error: "Merging would create a cycle." };
+      }
+    }
+    const now = new Date().toISOString();
+    const union = [
+      ...target.attachedReportIds,
+      ...source.attachedReportIds.filter(
+        (r) => !target.attachedReportIds.includes(r),
+      ),
+    ];
+    const moved = source.attachedReportIds.filter(
+      (r) => !target.attachedReportIds.includes(r),
+    );
+    const next = incidents.map((inc) => {
+      if (inc.id === targetId) {
+        return { ...inc, attachedReportIds: union, updatedAt: now };
+      }
+      if (inc.id === sourceId) {
+        return {
+          ...inc,
+          status: "duplicate" as Status,
+          mergedIntoId: targetId,
+          updatedAt: now,
+        };
+      }
+      return inc;
+    });
+    const event: IncidentEvent = {
+      id: `${targetId}-merged-${sourceId}-${Date.now()}`,
+      incidentId: targetId,
+      reportId: null,
+      actor,
+      type: "incident_merged",
+      from: sourceId,
+      to: targetId,
+      at: now,
+      note: reason.trim(),
+    };
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    const updatedTarget = next.find((inc) => inc.id === targetId);
+    const updatedSource = next.find((inc) => inc.id === sourceId);
+    if (
+      updatedTarget === undefined ||
+      updatedSource === undefined ||
+      !validateIncident(updatedTarget) ||
+      !validateIncident(updatedSource)
+    ) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    const items = listItems();
+    persistIncidentState({
+      incidents: next,
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+      items:
+        moved.length > 0
+          ? backfillIncidentId(items, moved, targetId)
+          : undefined,
+    });
+    return { ok: true, incident: updatedTarget, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Reclassify (coordinator + reason required). The canonical category changes
+// ONLY here via a reclassified event (old->new); Item originals are NEVER
+// mutated. Department is kept (use reassign to change it).
+export function reclassifyIncident(
+  id: string,
+  newCategory: Item["category"],
+  actor: Role,
+  reason: string,
+): IncidentResult {
+  try {
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    if (actor !== "coordinator") {
+      return { ok: false, error: "Only coordinators can reclassify." };
+    }
+    if (!isCategory(newCategory)) {
+      return { ok: false, error: "Invalid category." };
+    }
+    const reclassifyReasonErr = invalidReasonText(reason, "reclassify");
+    if (reclassifyReasonErr !== null) {
+      return { ok: false, error: reclassifyReasonErr };
+    }
+    const incidents = listIncidents();
+    const found = incidents.find((i) => i.id === id) ?? null;
+    if (found === null || !validateIncident(found)) {
+      return { ok: false, error: `Unknown incident '${id}'.` };
+    }
+    if (found.mergedIntoId !== null) {
+      return { ok: false, error: "Only canonical incidents can change." };
+    }
+    if (found.category === newCategory) {
+      return { ok: false, error: "Category is already set." };
+    }
+    const now = new Date().toISOString();
+    const updated: MasterIncident = {
+      ...found,
+      category: newCategory,
+      updatedAt: now,
+    };
+    if (!validateIncident(updated)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    const event: IncidentEvent = {
+      id: `${id}-reclassified-${Date.now()}`,
+      incidentId: id,
+      reportId: null,
+      actor,
+      type: "reclassified",
+      from: found.category,
+      to: newCategory,
+      at: now,
+      note: reason.trim(),
+    };
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    persistIncidentState({
+      incidents: incidents.map((i) => (i.id === id ? updated : i)),
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+    });
+    return { ok: true, incident: updated, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Reassign department (coordinator + reason required). Mirrors reclassify:
+// canonical field changes ONLY via a reassigned event; items untouched.
+export function reassignIncident(
+  id: string,
+  newDepartment: Department,
+  actor: Role,
+  reason: string,
+): IncidentResult {
+  try {
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    if (actor !== "coordinator") {
+      return { ok: false, error: "Only coordinators can reassign." };
+    }
+    if (!isDepartment(newDepartment)) {
+      return { ok: false, error: "Invalid department." };
+    }
+    const reassignReasonErr = invalidReasonText(reason, "reassign");
+    if (reassignReasonErr !== null) {
+      return { ok: false, error: reassignReasonErr };
+    }
+    const incidents = listIncidents();
+    const found = incidents.find((i) => i.id === id) ?? null;
+    if (found === null || !validateIncident(found)) {
+      return { ok: false, error: `Unknown incident '${id}'.` };
+    }
+    if (found.mergedIntoId !== null) {
+      return { ok: false, error: "Only canonical incidents can change." };
+    }
+    if (found.department === newDepartment) {
+      return { ok: false, error: "Department is already set." };
+    }
+    const now = new Date().toISOString();
+    const updated: MasterIncident = {
+      ...found,
+      department: newDepartment,
+      updatedAt: now,
+    };
+    if (!validateIncident(updated)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    const event: IncidentEvent = {
+      id: `${id}-reassigned-${Date.now()}`,
+      incidentId: id,
+      reportId: null,
+      actor,
+      type: "reassigned",
+      from: found.department,
+      to: newDepartment,
+      at: now,
+      note: reason.trim(),
+    };
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    persistIncidentState({
+      incidents: incidents.map((i) => (i.id === id ? updated : i)),
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+    });
+    return { ok: true, incident: updated, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Incident status transitions (INCIDENT_TRANSITIONS; the Item matrix stays
+// frozen). Role parity: coordinator every edge; assignee
+// approved<->in_progress<->resolved + verify; student verify/reopen ONLY.
+export function transitionIncident(
+  id: string,
+  to: Status,
+  actor: Role,
+  note?: string,
+): IncidentResult {
+  try {
+    if (typeof id !== "string" || id.length === 0) {
+      return { ok: false, error: "Unknown incident." };
+    }
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    const validStatuses: readonly string[] = [
+      "open",
+      "approved",
+      "in_progress",
+      "resolved",
+      "rejected",
+      "duplicate",
+    ];
+    if (!validStatuses.includes(to)) {
+      return { ok: false, error: `Invalid status '${String(to)}'.` };
+    }
+    const noteErr = invalidNoteText(note);
+    if (noteErr !== null) {
+      return { ok: false, error: noteErr };
+    }
+    const incidents = listIncidents();
+    const found = incidents.find((i) => i.id === id) ?? null;
+    if (found === null || !validateIncident(found)) {
+      return { ok: false, error: `Unknown incident '${id}'.` };
+    }
+    if (found.mergedIntoId !== null) {
+      return { ok: false, error: "Merged incidents cannot transition." };
+    }
+    const from = found.status;
+    if (!canTransitionIncident(from, to)) {
+      return {
+        ok: false,
+        error: `Transition ${from} -> ${to} is not allowed.`,
+      };
+    }
+    // THE student carve-out (one if-statement, documented): students may
+    // ONLY reopen a resolved incident (report a bad fix) — verifyIncident is
+    // the only other student path. Every other student edge fails here.
+    if (actor === "student" && !(from === "resolved" && to === "in_progress")) {
+      return {
+        ok: false,
+        error: "Students can only reopen a resolved incident.",
+      };
+    }
+    if (actor === "assignee") {
+      const allowed =
+        (from === "approved" && to === "in_progress") ||
+        (from === "in_progress" && to === "resolved") ||
+        (from === "resolved" && to === "in_progress");
+      if (!allowed) {
+        return {
+          ok: false,
+          error: `Assignees cannot move ${from} -> ${to}.`,
+        };
+      }
+    }
+    const type: IncidentEvent["type"] =
+      to === "approved"
+        ? "approved"
+        : to === "rejected"
+          ? "rejected"
+          : "status_changed";
+    const now = new Date().toISOString();
+    const event: IncidentEvent = {
+      id: `${id}-${from}-to-${to}-${Date.now()}`,
+      incidentId: id,
+      reportId: null,
+      actor,
+      type,
+      from,
+      to,
+      at: now,
+    };
+    if (typeof note === "string" && note.length > 0) event.note = note;
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    const updated: MasterIncident = {
+      ...found,
+      status: to,
+      updatedAt: now,
+    };
+    if (!validateIncident(updated)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    // Persist ONLY on success (failed writes stay silent: no event appended).
+    persistIncidentState({
+      incidents: incidents.map((i) => (i.id === id ? updated : i)),
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+    });
+    return { ok: true, incident: updated, event };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+export type VerifyIncidentResult =
+  | { ok: true; incident: MasterIncident; event: IncidentEvent; reopened: boolean }
+  | { ok: false; error: string };
+
+// Verification: fixed -> verified event + confirmed_fixed (status stays
+// resolved); broken -> verified event + resolved→in_progress reopen +
+// still_broken (department kept). Any role may verify (the student carve-out
+// explicitly includes it). One vote per browser namespace
+// (relayboard:{seed}:verify:{incidentId}, latest wins for display); every
+// vote appends an event. Only resolved incidents can be verified.
+export function verifyIncident(
+  id: string,
+  fixed: boolean,
+  actor: Role,
+): VerifyIncidentResult {
+  try {
+    if (typeof id !== "string" || id.length === 0) {
+      return { ok: false, error: "Unknown incident." };
+    }
+    if (typeof fixed !== "boolean") {
+      return { ok: false, error: "Vote must be a boolean." };
+    }
+    if (!isRole(actor)) return { ok: false, error: "Invalid role." };
+    const incidents = listIncidents();
+    const found = incidents.find((i) => i.id === id) ?? null;
+    if (found === null || !validateIncident(found)) {
+      return { ok: false, error: `Unknown incident '${id}'.` };
+    }
+    if (found.mergedIntoId !== null) {
+      return { ok: false, error: "Merged incidents cannot be verified." };
+    }
+    if (found.status !== "resolved") {
+      return { ok: false, error: "Only resolved incidents can be verified." };
+    }
+    const now = new Date().toISOString();
+    const updated: MasterIncident = {
+      ...found,
+      status: fixed ? "resolved" : "in_progress",
+      updatedAt: now,
+      verification: {
+        state: fixed ? "confirmed_fixed" : "still_broken",
+        by: actor,
+        at: now,
+      },
+    };
+    if (!validateIncident(updated)) {
+      return { ok: false, error: "Incident failed validation." };
+    }
+    const event: IncidentEvent = {
+      id: `${id}-verified-${Date.now()}`,
+      incidentId: id,
+      reportId: null,
+      actor,
+      type: "verified",
+      from: "resolved",
+      to: fixed ? "resolved" : "in_progress",
+      at: now,
+    };
+    if (!validateIncidentEvent(event)) {
+      return { ok: false, error: "Event failed validation." };
+    }
+    // Latest vote wins for display (best-effort; memory still works when
+    // storage throws).
+    writeKey(
+      verifyVoteKey(activeSeedId, id),
+      JSON.stringify({ fixed, by: actor, at: now }),
+    );
+    persistIncidentState({
+      incidents: incidents.map((i) => (i.id === id ? updated : i)),
+      events: [...listIncidentEvents(), event],
+      meta: readP3Meta(),
+    });
+    return { ok: true, incident: updated, event, reopened: !fixed };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Storage failure.",
+    };
+  }
+}
+
+// Latest browser vote for display (null when nobody voted here yet).
+export function readVerifyVote(
+  incidentId: string,
+): { fixed: boolean; by: Role; at: string } | null {
+  try {
+    const raw = readKey(verifyVoteKey(activeSeedId, incidentId));
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as {
+      fixed?: unknown;
+      by?: unknown;
+      at?: unknown;
+    };
+    if (
+      typeof parsed.fixed !== "boolean" ||
+      !isRole(parsed.by) ||
+      typeof parsed.at !== "string" ||
+      Number.isNaN(Date.parse(parsed.at))
+    ) {
+      return null;
+    }
+    return { fixed: parsed.fixed, by: parsed.by, at: parsed.at };
+  } catch {
+    return null;
+  }
+}
+
+// Submit flow: createItem (UNCHANGED) -> match against pre-submit incidents
+// -> auto-attach ONLY on the auto band (the store confirms; the message
+// never claims an attachment that failed) -> else open a NEW incident.
+// Uncertain placements (confidence < 0.6 or missing location) report
+// "awaiting review". Every report ends in exactly one incident.
+export function submitReportWithClustering(
+  input: CreateItemInput,
+): SubmitClusteringResult {
+  // Snapshot BEFORE create so the new report can never self-match.
+  const incidentsBefore = listIncidents();
+  const itemsByIdBefore = new Map(listItems().map((i) => [i.id, i]));
+  const created = createItem(input);
+  if (!created.ok) return { ok: false, error: created.error };
+  const report = created.item;
+  const itemsById = new Map(listItems().map((i) => [i.id, i]));
+  let candidates: MatchCandidate[] = [];
+  try {
+    candidates = matchReportToIncidents(
+      report,
+      incidentsBefore.filter(
+        (inc) => !inc.attachedReportIds.includes(report.id),
+      ),
+      itemsByIdBefore.size > 0 ? itemsById : itemsById,
+      3,
+    );
+  } catch {
+    candidates = [];
+  }
+  const best = candidates.find((c) => c.band === "auto") ?? null;
+  if (best !== null) {
+    const attach = attachReportToIncident(
+      report.id,
+      best.incidentId,
+      "coordinator",
+      `auto-attached (similarity ${Math.round(best.score * 100)}%)`,
+    );
+    if (attach.ok) {
+      return {
+        ok: true,
+        item: getItem(report.id) ?? report,
+        incident: attach.incident,
+        attached: true,
+        band: "auto",
+        score: best.score,
+        message: `Attached to ${attach.incident.id} (similarity ${Math.round(best.score * 100)}%).`,
+        candidates,
+      };
+    }
+    // Attach unconfirmed: fall through to open a new incident (never claim
+    // an attachment the store did not confirm).
+  }
+  const opened = createIncidentForReport(report.id, "coordinator");
+  if (!opened.ok) {
+    return {
+      ok: true,
+      item: report,
+      incident: {
+        id: "INC-?",
+        title: report.title,
+        category: report.category,
+        severity: report.severity,
+        locationLabel: report.location,
+        department: departmentForCategory(report.category, report.severity),
+        status: "open",
+        attachedReportIds: [report.id],
+        mergedIntoId: null,
+        createdFrom: report.id,
+        createdAt: report.createdAt,
+        updatedAt: report.updatedAt,
+        verification: { state: "unverified", by: null, at: null },
+      },
+      attached: false,
+      band:
+        candidates.length > 0 && candidates[0].band === "review"
+          ? "review"
+          : "separate",
+      score: candidates.length > 0 ? candidates[0].score : null,
+      message: `Report ${report.id} submitted as open (incident grouping unavailable).`,
+      candidates,
+    };
+  }
+  const uncertain =
+    report.confidence < 0.6 || report.location.trim().length < 2;
+  const topBand =
+    candidates.length > 0 ? candidates[0].band : ("separate" as MatchBand);
+  return {
+    ok: true,
+    item: getItem(report.id) ?? report,
+    incident: opened.incident,
+    attached: false,
+    band: topBand,
+    score: candidates.length > 0 ? candidates[0].score : null,
+    message: uncertain
+      ? `New incident ${opened.incident.id} opened — awaiting review (low confidence or missing location).`
+      : `New incident ${opened.incident.id} opened.`,
+    candidates,
+  };
 }

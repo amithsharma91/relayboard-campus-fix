@@ -125,8 +125,12 @@ export function resolveAppConfig(
 // AD-5 seed switch: only registered pack ids are selectable. Unknown or
 // malformed values fall back to the default namespace (never an arbitrary
 // key). Registering a new pack = add its items provider in lib/store.ts +
-// append its id here (the documented <60min authoring path).
-export const REGISTERED_SEED_IDS: readonly string[] = [SEED_ID];
+// append its id here (the documented <60min authoring path). Challenge-1
+// adds the demo pack id (namespace-isolated; canonical default unchanged).
+export const REGISTERED_SEED_IDS: readonly string[] = [
+  SEED_ID,
+  "challenge-wifi-1",
+];
 
 const SEED_ID_RE = /^[a-z0-9-]{1,24}$/;
 

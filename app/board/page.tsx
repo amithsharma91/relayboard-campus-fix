@@ -5,6 +5,10 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { buildCsv, exportFilename } from "../../lib/csv";
 import {
+  explainIncident,
+  matchReportToIncidents,
+} from "../../lib/clustering";
+import {
   loadPersistedPrefs,
   resolveAppConfig,
   savePersistedPrefs,
@@ -12,9 +16,20 @@ import {
   type Lang,
   type PersistedPrefs,
 } from "../../lib/config";
-import { suggestDuplicates } from "../../lib/duplicates";
-import type { Item, Role, Severity, Status } from "../../lib/schema";
-import { ensureSeeded, listItems, reseedDemo, setActiveSeedId } from "../../lib/store";
+import {
+  incidentStatusLabel,
+  type Item,
+  type MasterIncident,
+  type Severity,
+} from "../../lib/schema";
+import {
+  ensureSeeded,
+  listIncidentEvents,
+  listIncidents,
+  listItems,
+  reseedDemo,
+  setActiveSeedId,
+} from "../../lib/store";
 
 const SEVERITY_CHIP: Record<Severity, string> = {
   P0: "bg-red-600 text-white",
@@ -23,13 +38,22 @@ const SEVERITY_CHIP: Record<Severity, string> = {
   P3: "bg-zinc-200 text-zinc-700",
 };
 
-type StatusFilter = "all" | Status;
+type StatusFilter =
+  | "active"
+  | "all"
+  | "open"
+  | "approved"
+  | "in_progress"
+  | "resolved"
+  | "rejected"
+  | "duplicate";
 type SortMode = "priority" | "newest";
 
 const STATUS_OPTIONS: Array<{ value: StatusFilter; label: string }> = [
+  { value: "active", label: "Active" },
   { value: "all", label: "All" },
   { value: "open", label: "Open" },
-  { value: "approved", label: "Approved" },
+  { value: "approved", label: "Assigned" },
   { value: "in_progress", label: "In Progress" },
   { value: "resolved", label: "Resolved" },
   { value: "rejected", label: "Rejected" },
@@ -37,8 +61,6 @@ const STATUS_OPTIONS: Array<{ value: StatusFilter; label: string }> = [
 ];
 
 // P4-B search normalization: lowercase, punctuation/whitespace collapsed.
-// Same normalization as the duplicates location gate, applied to the
-// title+description+location haystack and the needle (substring match).
 function normSearch(s: string): string {
   return s
     .toLowerCase()
@@ -47,56 +69,72 @@ function normSearch(s: string): string {
     .trim();
 }
 
-function QueueCard({ item, dupCount }: { item: Item; dupCount: number }) {
+interface CardData {
+  incident: MasterIncident;
+  members: Item[];
+  maxScore: number;
+  newestAt: number;
+  uncertain: boolean;
+  explanation: string;
+  pending: { incidentId: string; score: number } | null;
+}
+
+function IncidentCard({ card }: { card: CardData }) {
+  const { incident, members, maxScore, uncertain, explanation, pending } = card;
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className={`rounded px-2 py-0.5 text-xs font-semibold ${SEVERITY_CHIP[item.severity]}`}
+          className={`rounded px-2 py-0.5 text-xs font-semibold ${SEVERITY_CHIP[incident.severity]}`}
         >
-          {item.severity}
+          {incident.severity}
         </span>
-        <span className="font-mono text-xs text-zinc-700">
-          P{item.priority_score}
-        </span>
-        <span className="font-mono text-xs text-zinc-400">{item.short}</span>
+        <span className="font-mono text-xs text-zinc-700">P{maxScore}</span>
+        <span className="font-mono text-xs text-zinc-400">{incident.id}</span>
         <span className="flex-1" />
-        {dupCount > 0 && (
+        <span
+          className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-900"
+          title="Reports grouped in this incident"
+        >
+          &times;{members.length} report{members.length === 1 ? "" : "s"}
+        </span>
+        {uncertain && (
           <span
             className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900"
-            title="Possible duplicates suggested by word overlap"
+            title="At least one grouped report needs human review"
           >
-            &times;{dupCount} possible dup{dupCount === 1 ? "" : "s"}
+            &#9888; needs review
           </span>
         )}
-        {item.duplicateOfId !== null && (
-          <span className="rounded-full bg-zinc-200 px-2 py-0.5 font-mono text-xs text-zinc-700">
-            duplicate of {item.duplicateOfId}
+        {pending !== null && (
+          <span
+            className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-900"
+            title={`Possible match to ${pending.incidentId} awaiting review`}
+          >
+            &#9673; candidate to review
           </span>
         )}
         <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
-          {item.status}
+          {incidentStatusLabel(incident.status)}
         </span>
       </div>
       <Link
-        href={`/request/${item.id}`}
+        href={`/request/${incident.id}`}
         className="mt-2 block min-h-[44px] break-words font-medium underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
-        {item.title}
+        {incident.title}
       </Link>
       <p className="mt-1 break-words text-xs text-zinc-500">
-        {item.location} &middot; {item.category} &middot;{" "}
-        {item.recommended_action} &middot; confidence{" "}
-        {Math.round(item.confidence * 100)}%
+        {incident.locationLabel} &middot; {incident.category} &middot;{" "}
+        {incident.department}
       </p>
+      <p className="mt-1 break-words text-xs text-zinc-500">{explanation}</p>
     </li>
   );
 }
 
 function BoardInner() {
   const params = useSearchParams();
-  // P4-A: components render defaults pre-mount (SSR/first paint agree — no
-  // hydration mismatch); persisted prefs apply in useEffect below.
   const query = useMemo(
     () => ({
       role: params.get("role") ?? undefined,
@@ -109,26 +147,23 @@ function BoardInner() {
   );
   const [prefs, setPrefs] = useState<PersistedPrefs>({});
   const [items, setItems] = useState<Item[] | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [incidents, setIncidents] = useState<MasterIncident[] | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [sortMode, setSortMode] = useState<SortMode>("priority");
   const [search, setSearch] = useState("");
-  const [role, setRole] = useState<Role>("coordinator");
+  const [role, setRole] = useState<"student" | "coordinator" | "assignee">(
+    "coordinator",
+  );
 
   const cfg = resolveAppConfig(query, prefs);
   const demo = cfg.demo;
   const lang: Lang = cfg.lang;
-  // P4-A SIMPLE_MODE: hide sort select + export button on this screen (the
-  // detail screen hides the duplicate SUGGESTIONS section; the hard-link
-  // panel stays). Board badges + filters + submit→review→resolve keep
-  // working; store auth/validation are never bypassed.
   const simple = cfg.simpleMode;
 
   useEffect(() => {
     const stored = loadPersistedPrefs();
     setPrefs(stored);
     setRole(resolveAppConfig(query, stored).role);
-    // AD-5: activate the ?seed= namespace before seeding/listing so an
-    // alternate pack isolates its storage. Unknown ids fall back to default.
     setActiveSeedId(resolveAppConfig(query, stored).seedId);
     if (demo) {
       reseedDemo();
@@ -136,10 +171,13 @@ function BoardInner() {
       ensureSeeded();
     }
     setItems(listItems());
+    setIncidents(listIncidents());
+    // Touch the incident-event layer so lazy state initializes uniformly.
+    listIncidentEvents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo]);
 
-  function handleRole(next: Role) {
+  function handleRole(next: "student" | "coordinator" | "assignee") {
     setRole(next);
     setPrefs((prev) => {
       const merged = { ...prev, role: next };
@@ -148,40 +186,113 @@ function BoardInner() {
     });
   }
 
-  // P4-B: suggestion counts per card (bounded scan inside suggestDuplicates).
-  const dupCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    if (items === null) return map;
-    for (const item of items) {
-      map.set(item.id, suggestDuplicates(item, items, 3).length);
+  // ONE card per canonical incident (merged aliases never render).
+  const cards = useMemo<CardData[] | null>(() => {
+    if (items === null || incidents === null) return null;
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const canonical = incidents.filter((i) => i.mergedIntoId === null);
+    // Pending-candidate flags: single-member incidents whose sole report
+    // review-matches another canonical incident (human decision outstanding).
+    const pendingBy = new Map<string, { incidentId: string; score: number }>();
+    for (const inc of canonical) {
+      if (inc.attachedReportIds.length !== 1) continue;
+      const sole = byId.get(inc.attachedReportIds[0]);
+      if (sole === undefined) continue;
+      try {
+        const cands = matchReportToIncidents(
+          sole,
+          canonical.filter((o) => o.id !== inc.id),
+          byId,
+          1,
+        );
+        if (cands.length > 0 && cands[0].band === "review") {
+          pendingBy.set(inc.id, {
+            incidentId: cands[0].incidentId,
+            score: cands[0].score,
+          });
+        }
+      } catch {
+        // Matcher is pure; a failure here must never break the board.
+      }
     }
-    return map;
-  }, [items]);
+    return canonical.map((incident) => {
+      const members = incident.attachedReportIds
+        .map((id) => byId.get(id))
+        .filter((m): m is Item => m !== undefined);
+      let maxScore = 0;
+      let newestAt = 0;
+      let uncertain = false;
+      for (const m of members) {
+        if (m.priority_score > maxScore) maxScore = m.priority_score;
+        const at = Date.parse(m.createdAt);
+        if (at > newestAt) newestAt = at;
+        if (m.confidence < 0.6) uncertain = true;
+      }
+      let explanation = "";
+      try {
+        explanation = explainIncident(incident, byId);
+      } catch {
+        explanation = `${members.length} grouped reports`;
+      }
+      return {
+        incident,
+        members,
+        maxScore,
+        newestAt,
+        uncertain,
+        explanation,
+        pending: pendingBy.get(incident.id) ?? null,
+      };
+    });
+  }, [items, incidents]);
 
   const visible = useMemo(() => {
-    if (items === null) return null;
+    if (cards === null) return null;
     const needle = normSearch(search);
-    const filtered = items.filter((i) => {
-      if (statusFilter !== "all" && i.status !== statusFilter) return false;
+    const filtered = cards.filter((c) => {
+      const st = c.incident.status;
+      if (statusFilter === "active") {
+        if (st !== "open" && st !== "approved" && st !== "in_progress") {
+          return false;
+        }
+      } else if (statusFilter !== "all" && st !== statusFilter) {
+        return false;
+      }
       if (needle.length > 0) {
-        const hay = normSearch(`${i.title} ${i.description} ${i.location}`);
+        const hay = normSearch(
+          `${c.incident.title} ${c.incident.locationLabel} ${c.incident.category} ${c.incident.department} ` +
+            c.members.map((m) => `${m.title} ${m.description} ${m.location}`).join(" "),
+        );
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
     if (sortMode === "priority") {
-      filtered.sort((a, b) => b.priority_score - a.priority_score);
+      filtered.sort((a, b) => b.maxScore - a.maxScore || b.newestAt - a.newestAt);
     } else {
-      filtered.sort(
-        (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
-      );
+      filtered.sort((a, b) => b.newestAt - a.newestAt);
     }
     return filtered;
-  }, [items, statusFilter, sortMode, search]);
+  }, [cards, statusFilter, sortMode, search]);
+
+  const totalReports = useMemo(() => {
+    if (visible === null) return 0;
+    return visible.reduce((n, c) => n + c.members.length, 0);
+  }, [visible]);
 
   function handleExport() {
     if (visible === null) return;
-    const csv = buildCsv(visible);
+    // F10: export the CURRENTLY VISIBLE (filtered+sorted) records, expanded
+    // to member report rows in display order (incident sort, members
+    // oldest-first). Rows stay reports; CSV columns frozen (stability clause).
+    const rows: Item[] = [];
+    for (const c of visible) {
+      const ordered = [...c.members].sort((a, b) =>
+        a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1,
+      );
+      for (const m of ordered) rows.push(m);
+    }
+    const csv = buildCsv(rows);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -207,7 +318,7 @@ function BoardInner() {
         )}
         {visible !== null && (
           <span className="text-xs text-zinc-500" aria-live="polite">
-            {visible.length} {t("boardCount", lang)}
+            {visible.length} incidents ({totalReports} reports)
           </span>
         )}
       </div>
@@ -222,7 +333,11 @@ function BoardInner() {
           <select
             id="board-role"
             value={role}
-            onChange={(e) => handleRole(e.target.value as Role)}
+            onChange={(e) =>
+              handleRole(
+                e.target.value as "student" | "coordinator" | "assignee",
+              )
+            }
             className="min-h-[44px] rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
           >
             <option value="student">Student</option>
@@ -280,8 +395,8 @@ function BoardInner() {
               onChange={(e) => setSortMode(e.target.value as SortMode)}
               className="min-h-[44px] rounded border border-zinc-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
             >
-              <option value="priority">Priority↓</option>
-              <option value="newest">Newest</option>
+              <option value="priority">Max score↓</option>
+              <option value="newest">Newest member</option>
             </select>
           </div>
         )}
@@ -322,12 +437,8 @@ function BoardInner() {
           </div>
         ) : (
           <ul className="space-y-3">
-            {visible.map((item) => (
-              <QueueCard
-                key={item.id}
-                item={item}
-                dupCount={dupCounts.get(item.id) ?? 0}
-              />
+            {visible.map((card) => (
+              <IncidentCard key={card.incident.id} card={card} />
             ))}
           </ul>
         )}
@@ -336,8 +447,6 @@ function BoardInner() {
   );
 }
 
-// Suspense boundary is mandatory: useSearchParams() without it fails the
-// static prerender build (P0 lesson).
 export default function BoardPage() {
   return (
     <Suspense
